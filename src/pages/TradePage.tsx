@@ -33,7 +33,7 @@ function TradingChart() {
     });
     chartApi.current = chart;
 
-    const candleSeries = chart.addCandlestickSeries({
+    const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e', downColor: '#ef4444', borderDownColor: '#ef4444', borderUpColor: '#22c55e',
       wickDownColor: '#ef4444', wickUpColor: '#22c55e',
     });
@@ -54,7 +54,7 @@ function TradingChart() {
     }
     candleSeries.setData(candles as any);
 
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       color: 'hsl(160, 90%, 43%)',
       priceFormat: { type: 'volume' },
       priceScaleId: '',
