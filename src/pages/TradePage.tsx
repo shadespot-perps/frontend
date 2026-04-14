@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { TrendingUp, TrendingDown, X as XIcon, Info, Shield } from 'lucide-react';
-import { createChart, ColorType, type IChartApi } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, HistogramSeries, type IChartApi } from 'lightweight-charts';
 
 // --- Chart Component ---
 function TradingChart() {
