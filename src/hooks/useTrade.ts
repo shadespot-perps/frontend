@@ -12,23 +12,9 @@ import {
   FHE_ROUTER_ABI, FHE_TOKEN_ABI,
   PRICE_ORACLE_ABI, VAULT_EVENTS_ABI,
 } from '@/lib/contracts';
-import { cofheClient, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
+import { cofheClient, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
 
-async function withFreshGas(
-  publicClient: ReturnType<typeof usePublicClient>,
-): Promise<Pick<WriteContractParameters, 'maxFeePerGas' | 'maxPriorityFeePerGas'>> {
-  if (!publicClient) return {};
-  try {
-    const fees = await publicClient.estimateFeesPerGas();
-    const buf = (v: bigint) => (v * 130n) / 100n;
-    return {
-      maxFeePerGas:         buf(fees.maxFeePerGas         ?? 0n),
-      maxPriorityFeePerGas: buf(fees.maxPriorityFeePerGas ?? 0n),
-    };
-  } catch {
-    return {};
-  }
-}
+// Manual gas override removed to let Viem natively negotiate Arbitrum L2 fees
 
 export type TradeStatus =
   | 'idle'
@@ -82,8 +68,7 @@ export function useOpenPosition() {
     setError(null);
 
     try {
-      const gas = await withFreshGas(publicClient);
-
+      if (!isCofheReady()) throw new Error('CoFHE client not ready — wallet still connecting, please try again in a moment');
       // ── 1. Ensure operator permission ───────────────────────────
       if (!isOperatorRaw) {
         setStatus('setting_operator');
@@ -93,7 +78,7 @@ export function useOpenPosition() {
           abi: FHE_TOKEN_ABI,
           functionName: 'setOperator',
           args: [CONTRACTS.router, oneYear],
-          ...gas,
+          gas: 100_000n,  // simple storage write — bypass broken MetaMask CoFHE sim
         });
         await refetchOperator();
       }
@@ -115,7 +100,6 @@ export function useOpenPosition() {
           .execute();
 
         setStatus('submitting');
-        const freshGas = await withFreshGas(publicClient);
         await write({
           address: CONTRACTS.router,
           abi: FHE_ROUTER_ABI,
@@ -128,7 +112,7 @@ export function useOpenPosition() {
             normaliseEnc(eIsLong),
           ],
           value: actionFee,
-          ...freshGas,
+          gas: 600_000n,  // CoFHE FHE ops — bypass broken gas sim
         });
         setStatus('confirmed');
         return;
@@ -152,13 +136,12 @@ export function useOpenPosition() {
 
       // Phase 1: submit FHE liquidity check task
       setStatus('submitting');
-      const phase1Gas = await withFreshGas(publicClient);
       const phase1Hash = await write({
         address: CONTRACTS.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'submitDecryptTaskForOpen',
         args: [INDEX_TOKEN, encC, encL, encI],
-        ...phase1Gas,
+        gas: 600_000n,
       });
 
       setStatus('fhe_decrypt_sent');
@@ -195,7 +178,6 @@ export function useOpenPosition() {
 
       // Phase 2: open position with proof
       setStatus('submitting');
-      const phase2Gas = await withFreshGas(publicClient);
       await write({
         address: CONTRACTS.router,
         abi: FHE_ROUTER_ABI,
@@ -203,7 +185,7 @@ export function useOpenPosition() {
         // Re-use the SAME ciphertexts (same ctHash) from phase 1.
         args: [INDEX_TOKEN, encC, encL, encI, hasLiqPlain, hasLiqSig],
         value: actionFee,
-        ...phase2Gas,
+        gas: 800_000n,
       });
 
       setStatus('confirmed');
@@ -242,7 +224,6 @@ export function useClosePosition() {
   const execute = useCallback(async (positionKey: `0x${string}`) => {
     setError(null);
     try {
-      const gas = await withFreshGas(publicClient);
       setStatus('submitting');
       await write({
         address: CONTRACTS.router,
@@ -250,7 +231,7 @@ export function useClosePosition() {
         functionName: 'closePosition',
         args: [positionKey],
         value: actionFee,
-        ...gas,
+        gas: 600_000n,
       });
       setStatus('confirmed');
     } catch (err: unknown) {
@@ -273,14 +254,13 @@ export function useCancelOrder() {
   const execute = useCallback(async (orderId: number) => {
     setError(null);
     try {
-      const gas = await withFreshGas(publicClient);
       setStatus('submitting');
       await write({
         address: CONTRACTS.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'cancelOrder',
         args: [BigInt(orderId)],
-        ...gas,
+        gas: 200_000n,
       });
       setStatus('confirmed');
     } catch (err: unknown) {

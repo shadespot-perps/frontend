@@ -8,6 +8,9 @@ import { usePublicClient, useWalletClient } from 'wagmi';
 const _config = createCofheConfig({ supportedChains: [chains.arbSepolia] });
 export const cofheClient = createCofheClient(_config);
 
+let _cofheReady = false;
+export function isCofheReady() { return _cofheReady; }
+
 // Normalise a signature string to a viem-compatible 0x-prefixed hex.
 export function toHexSig(sig: string): `0x${string}` {
   return (sig.startsWith('0x') ? sig : `0x${sig}`) as `0x${string}`;
@@ -39,7 +42,7 @@ export function useCofheClient() {
     connectingRef.current = true;
     cofheClient
       .connect(publicClient as any, walletClient as any)
-      .then(() => setReady(true))
+      .then(() => { _cofheReady = true; setReady(true); })
       .catch((err: unknown) => console.error('[CoFHE] connect failed:', err))
       .finally(() => { connectingRef.current = false; });
   }, [publicClient, walletClient]);

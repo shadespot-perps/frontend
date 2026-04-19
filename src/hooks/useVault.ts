@@ -11,23 +11,9 @@ import {
   CONTRACTS, TOKEN_DECIMALS,
   FHE_ROUTER_ABI, FHE_TOKEN_ABI, VAULT_EVENTS_ABI,
 } from '@/lib/contracts';
-import { cofheClient, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
+import { cofheClient, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
 
-async function withFreshGas(
-  publicClient: ReturnType<typeof usePublicClient>,
-): Promise<Pick<WriteContractParameters, 'maxFeePerGas' | 'maxPriorityFeePerGas'>> {
-  if (!publicClient) return {};
-  try {
-    const fees = await publicClient.estimateFeesPerGas();
-    const buf = (v: bigint) => (v * 130n) / 100n;
-    return {
-      maxFeePerGas:         buf(fees.maxFeePerGas         ?? 0n),
-      maxPriorityFeePerGas: buf(fees.maxPriorityFeePerGas ?? 0n),
-    };
-  } catch {
-    return {};
-  }
-}
+// Manual gas override removed to let Viem natively negotiate Arbitrum L2 fees
 
 // FHEVault totalLiquidity is an encrypted euint64 — TVL and utilization
 // are never readable as plaintext. Always return encrypted.
@@ -71,9 +57,8 @@ export function useAddLiquidity() {
     if (!address) return;
     setError(null);
     try {
+      if (!isCofheReady()) throw new Error('CoFHE client not ready — wallet still connecting, please try again in a moment');
       const amountWei = parseUnits(amountStr, TOKEN_DECIMALS);
-      const gas = await withFreshGas(publicClient);
-
       if (!isOperatorRaw) {
         setStatus('setting_operator');
         const oneYear = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
@@ -82,7 +67,6 @@ export function useAddLiquidity() {
           abi: FHE_TOKEN_ABI,
           functionName: 'setOperator',
           args: [CONTRACTS.router, oneYear],
-          ...gas,
         });
         await refetchOperator();
       }
@@ -93,24 +77,32 @@ export function useAddLiquidity() {
         .execute();
 
       setStatus('submitting');
-      const freshGas = await withFreshGas(publicClient);
+      const fees = await publicClient!.estimateFeesPerGas();
       await write({
         address: CONTRACTS.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'addLiquidity',
         args: [normaliseEnc(encAmount)],
-        ...freshGas,
+        gas: 1_000_000n,             // CoFHE precompiles break simulation — fixed gas limit; prev 500k ran OOG
+        maxFeePerGas:         fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
       });
       setStatus('confirmed');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Transaction failed');
+      const msg = err instanceof Error ? err.message : 'Transaction failed';
+      const isRejection = msg.toLowerCase().includes('user denied') || msg.toLowerCase().includes('user rejected');
+      setError(
+        isRejection
+          ? 'Transaction rejected. The operator approval is required once to let the pool handle your encrypted tokens — please approve it in MetaMask to continue.'
+          : msg
+      );
       setStatus('error');
     }
   }, [address, isOperatorRaw, write, refetchOperator, publicClient]);
 
   const reset = useCallback(() => { setStatus('idle'); setError(null); }, []);
 
-  return { execute, status, error, reset };
+  return { execute, status, error, reset, isOperatorSet: !!isOperatorRaw };
 }
 
 export function useRemoveLiquidity() {
@@ -129,13 +121,11 @@ export function useRemoveLiquidity() {
 
       // Phase 1: submit withdraw check on-chain
       setStatus('submitting_check');
-      const phase1Gas = await withFreshGas(publicClient);
       const phase1Hash = await write({
         address: CONTRACTS.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'submitWithdrawCheck',
         args: [shares],
-        ...phase1Gas,
       });
 
       setStatus('awaiting_decrypt');
@@ -176,13 +166,11 @@ export function useRemoveLiquidity() {
 
       // Phase 2: finalise withdrawal with proofs
       setStatus('submitting');
-      const phase2Gas = await withFreshGas(publicClient);
       await write({
         address: CONTRACTS.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'removeLiquidity',
         args: [shares, balPlain, balSig, liqPlain, liqSig],
-        ...phase2Gas,
       });
 
       setStatus('confirmed');

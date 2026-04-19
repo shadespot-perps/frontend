@@ -79,6 +79,7 @@ export default function EarnPage() {
   const apy = { apy7d: 18.7, apy30d: 16.2 };
 
   const deposit  = useAddLiquidity();
+  const { isOperatorSet } = deposit;
   const withdraw = useRemoveLiquidity();
 
   const active = tab === 'deposit' ? deposit : withdraw;
@@ -102,10 +103,12 @@ export default function EarnPage() {
 
   function depositButtonLabel() {
     if (!isConnected) return 'Connect Wallet';
-    if (active.status === 'setting_operator') return 'Setting Operator…';
-    if (active.status === 'submitting') return 'Depositing…';
-    if (active.status === 'confirmed') return 'Deposited!';
-    return 'Set Operator & Deposit';
+    if (active.status === 'setting_operator') return 'Step 1/2: Approving Operator…';
+    if (active.status === 'encrypting')       return 'Step 2/2: Encrypting…';
+    if (active.status === 'submitting')       return 'Step 2/2: Depositing…';
+    if (active.status === 'confirmed')        return 'Deposited!';
+    if (!isOperatorSet) return 'Approve Operator & Deposit';
+    return 'Deposit';
   }
 
   function withdrawButtonLabel() {
@@ -282,10 +285,14 @@ export default function EarnPage() {
                     ${((parseFloat(amount) * apy.apy7d / 100) / 12).toFixed(2)}
                   </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Pre-req</span>
-                  <span className="font-mono text-shade-amber">setOperator required</span>
-                </div>
+                {!isOperatorSet && (
+                  <div className="flex justify-between items-start gap-2">
+                    <span className="text-muted-foreground shrink-0">Step 1 of 2</span>
+                    <span className="font-mono text-shade-amber text-right leading-tight">
+                      Approve the router as operator (one-time, sign in MetaMask)
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 

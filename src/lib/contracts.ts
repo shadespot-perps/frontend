@@ -13,14 +13,14 @@ export const INDEX_TOKEN = '0x980B62Da83eFf3D4576C647993b0c1D7faf17c73' as const
 export const TOKEN_DECIMALS = 6;
 
 export const CONTRACTS = {
-  router:             '0xf30703A365777EE4c4751c5A025646D9AcF505E5',
-  fheToken:           '0xb3f5e35969E587e84c57519CC85459600D198f34',
-  priceOracle:        '0xFedC9be2506F20df6e07bE1C90288660a011d203',
-  fundingRateManager: '0xF8CFdeBAA82FDb0C710F25CAD06F6f672C267A87',
-  vault:              '0xAe20131B74b930c58A2536F11b3bddA899E7187c',
-  positionManager:    '0xA1b1D50830C3f630ceD11b4ffdbDa4aa6029615E',
-  orderManager:       '0x3db1b90996baDb4fE804843EE16768861f750487',
-  liquidationManager: '0xaf823b9A427B31cC9776F998cD58a3A2018FFabC',
+  router:             '0xbF0561BfD203c061806523B009127aa79B4a3185',
+  fheToken:           '0xe952e43CFCA6e3dd12c1F22EB4C269Bd513f15F6',
+  priceOracle:        '0xeE3452EeBE1E18297EACEcDA6FD2203944198a11',
+  fundingRateManager: '0xF7DC4ef11C0AC6a1Ad03D40Fb5667C9536e3d8D5',
+  vault:              '0xdD6ffF3B71f7C9Af341c577ceFFE2de892C98fA0',
+  positionManager:    '0x3b9F80f3D1B5a635d22528ed7F4868edf4512951',
+  orderManager:       '0x0109C383275D0261773e2E3779465320344639b1',
+  liquidationManager: '0xfF88616f203268Ca2BeDE8C5303DbddcEcD4Da62',
 } as const;
 
 // ─────────────────────────────────────────────────────────────
