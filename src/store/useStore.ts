@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 
-export type Pool = 'pool1' | 'pool2';
+export type Pool = 'fhe';
 export type PrivacyLevel = 'ZK' | 'DP' | 'PUBLIC';
 export type OrderSide = 'long' | 'short';
-export type OrderType = 'market' | 'limit' | 'stop';
+export type OrderType = 'market' | 'limit';
 export type PositionStatus = 'encrypted' | 'decrypting' | 'decrypted';
 
 export interface Position {
@@ -11,6 +11,7 @@ export interface Position {
   pool: Pool;
   pair: string;
   side: OrderSide;
+  positionKey: `0x${string}`;  // bytes32 key for closePosition(positionId)
   size: number;
   collateral: number;
   leverage: number;
@@ -86,9 +87,8 @@ interface MarketData {
 interface WalletState {
   connected: boolean;
   address: string | null;
-  balanceUSDC: number;
   balanceFHE: number;
-  isPool2Operator: boolean;
+  isOperator: boolean;
 }
 
 interface AppState {
@@ -96,21 +96,24 @@ interface AppState {
   wallet: WalletState;
   connectWallet: () => void;
   disconnectWallet: () => void;
+  syncWallet: (data: Partial<WalletState>) => void;
 
-  // Pool
+  // Pool (single FHE pool — no switching)
   activePool: Pool;
-  setActivePool: (pool: Pool) => void;
 
   // Market
   market: MarketData;
   updatePrice: (price: number) => void;
+  updateMarket: (patch: Partial<MarketData>) => void;
 
   // Positions
   positions: Position[];
+  setPositions: (positions: Position[]) => void;
   decryptPosition: (id: string) => void;
 
   // Orders
   orders: Order[];
+  setOrders: (orders: Order[]) => void;
   cancelOrder: (id: string) => void;
 
   // History
@@ -129,32 +132,30 @@ interface AppState {
   dismissOnboarding: () => void;
 
   // Earn
-  lpPosition: { pool1: number; pool2: number; pool1Apy: number; pool2Apy: number };
+  lpPosition: { deposited: number; apy: number };
 }
 
 export const useStore = create<AppState>((set, get) => ({
   wallet: {
     connected: false,
     address: null,
-    balanceUSDC: 12847.53,
-    balanceFHE: 45230.00,
-    isPool2Operator: false,
+    balanceFHE: 0,
+    isOperator: false,
   },
   connectWallet: () => set({
     wallet: {
       connected: true,
       address: '0x7a3F...9e2B',
-      balanceUSDC: 12847.53,
-      balanceFHE: 45230.00,
-      isPool2Operator: false,
+      balanceFHE: 0,
+      isOperator: false,
     }
   }),
   disconnectWallet: () => set({
-    wallet: { connected: false, address: null, balanceUSDC: 0, balanceFHE: 0, isPool2Operator: false }
+    wallet: { connected: false, address: null, balanceFHE: 0, isOperator: false }
   }),
+  syncWallet: (data) => set((s) => ({ wallet: { ...s.wallet, ...data } })),
 
-  activePool: 'pool1',
-  setActivePool: (pool) => set({ activePool: pool }),
+  activePool: 'fhe',
 
   market: {
     pair: 'ETH-USD',
@@ -173,27 +174,12 @@ export const useStore = create<AppState>((set, get) => ({
   updatePrice: (price) => set((s) => ({
     market: { ...s.market, markPrice: price }
   })),
+  updateMarket: (patch) => set((s) => ({
+    market: { ...s.market, ...patch }
+  })),
 
-  positions: [
-    {
-      id: 'pos-1', pool: 'pool1', pair: 'ETH-USD', side: 'long',
-      size: 2.5, collateral: 1500, leverage: 5, entryPrice: 3720.00,
-      markPrice: 3847.52, pnl: 318.80, pnlPercent: 21.25,
-      liquidationPrice: 3120.00, status: 'encrypted', openedAt: '2024-03-10T14:23:00Z',
-    },
-    {
-      id: 'pos-2', pool: 'pool1', pair: 'BTC-USD', side: 'short',
-      size: 0.15, collateral: 3000, leverage: 3, entryPrice: 71200.00,
-      markPrice: 69847.00, pnl: 203.25, pnlPercent: 6.78,
-      liquidationPrice: 78500.00, status: 'encrypted', openedAt: '2024-03-09T09:15:00Z',
-    },
-    {
-      id: 'pos-3', pool: 'pool2', pair: 'ETH-USD', side: 'long',
-      size: 1.0, collateral: 800, leverage: 5, entryPrice: 3800.00,
-      markPrice: 3847.52, pnl: 47.52, pnlPercent: 5.94,
-      liquidationPrice: 3200.00, status: 'encrypted', openedAt: '2024-03-11T16:45:00Z',
-    },
-  ],
+  positions: [],
+  setPositions: (positions) => set({ positions }),
   decryptPosition: (id) => {
     set((s) => ({
       positions: s.positions.map(p => p.id === id ? { ...p, status: 'decrypting' as PositionStatus } : p)
@@ -205,38 +191,30 @@ export const useStore = create<AppState>((set, get) => ({
     }, 1500);
   },
 
-  orders: [
-    {
-      id: 'ord-1', pool: 'pool1', pair: 'ETH-USD', side: 'long', type: 'limit',
-      size: 1.0, price: 3700.00, status: 'pending', createdAt: '2024-03-11T10:00:00Z', encrypted: true,
-    },
-    {
-      id: 'ord-2', pool: 'pool1', pair: 'BTC-USD', side: 'short', type: 'stop',
-      size: 0.05, price: 72000.00, status: 'pending', createdAt: '2024-03-11T11:30:00Z', encrypted: true,
-    },
-  ],
+  orders: [],
+  setOrders: (orders) => set({ orders }),
   cancelOrder: (id) => set((s) => ({
     orders: s.orders.filter(o => o.id !== id)
   })),
 
   history: [
     {
-      id: 'hist-1', pool: 'pool1', pair: 'ETH-USD', side: 'long', size: 3.0,
+      id: 'hist-1', pool: 'fhe' as Pool, pair: 'ETH-USD', side: 'long', size: 3.0,
       entryPrice: 3450.00, exitPrice: 3620.00, pnl: 510.00, pnlPercent: 4.93,
       closedAt: '2024-03-08T18:30:00Z',
     },
     {
-      id: 'hist-2', pool: 'pool1', pair: 'BTC-USD', side: 'short', size: 0.1,
+      id: 'hist-2', pool: 'fhe' as Pool, pair: 'BTC-USD', side: 'short', size: 0.1,
       entryPrice: 68500.00, exitPrice: 67200.00, pnl: 130.00, pnlPercent: 1.90,
       closedAt: '2024-03-07T12:15:00Z',
     },
     {
-      id: 'hist-3', pool: 'pool2', pair: 'ETH-USD', side: 'long', size: 2.0,
+      id: 'hist-3', pool: 'fhe' as Pool, pair: 'ETH-USD', side: 'long', size: 2.0,
       entryPrice: 3380.00, exitPrice: 3290.00, pnl: -180.00, pnlPercent: -2.66,
       closedAt: '2024-03-06T20:45:00Z',
     },
     {
-      id: 'hist-4', pool: 'pool1', pair: 'ETH-USD', side: 'short', size: 1.5,
+      id: 'hist-4', pool: 'fhe' as Pool, pair: 'ETH-USD', side: 'short', size: 1.5,
       entryPrice: 3580.00, exitPrice: 3510.00, pnl: 105.00, pnlPercent: 1.96,
       closedAt: '2024-03-05T14:00:00Z',
     },
@@ -274,5 +252,5 @@ export const useStore = create<AppState>((set, get) => ({
   showOnboarding: true,
   dismissOnboarding: () => set({ showOnboarding: false }),
 
-  lpPosition: { pool1: 25000, pool2: 15000, pool1Apy: 12.4, pool2Apy: 18.7 },
+  lpPosition: { deposited: 0, apy: 18.7 },
 }));

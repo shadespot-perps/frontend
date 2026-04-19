@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { OnboardingModal } from "@/components/shade/OnboardingModal";
+import { useCofheClient } from "@/hooks/useCofhe";
 import TradePage from "./pages/TradePage";
 import PositionsPage from "./pages/PositionsPage";
 import HistoryPage from "./pages/HistoryPage";
@@ -17,8 +18,10 @@ import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
+// Inner component so useCofheClient can access the wagmi context from main.tsx.
+function AppInner() {
+  useCofheClient();
+  return (
     <TooltipProvider>
       <Toaster />
       <Sonner />
@@ -40,6 +43,12 @@ const App = () => (
         </Routes>
       </BrowserRouter>
     </TooltipProvider>
+  );
+}
+
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <AppInner />
   </QueryClientProvider>
 );
 

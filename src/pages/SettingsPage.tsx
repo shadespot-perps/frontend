@@ -79,10 +79,10 @@ export default function SettingsPage() {
       {/* Pool 2 Operator */}
       <div className="shade-card p-5 space-y-4">
         <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <Shield className="w-4 h-4 text-shade-teal" /> Pool 2 Operator Status
+          <Shield className="w-4 h-4 text-shade-teal" /> FHE Pool Operator Status
         </h2>
         {wallet.connected ? (
-          wallet.isPool2Operator ? (
+          wallet.isOperator ? (
             <div className="flex items-center gap-2 p-3 rounded-md bg-shade-green/10 border border-shade-green/20">
               <div className="w-2 h-2 rounded-full bg-shade-green" />
               <span className="text-sm text-shade-green">Operator Active</span>
@@ -90,7 +90,7 @@ export default function SettingsPage() {
           ) : (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Pool 2 requires operator setup to manage encrypted collateral. This is a one-time process.
+                The FHE pool requires operator setup to manage encrypted collateral. This is a one-time process.
               </p>
               <Button className="gradient-teal text-shade-bg-primary font-semibold text-xs">
                 Setup Operator

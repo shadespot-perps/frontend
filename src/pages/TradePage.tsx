@@ -1,23 +1,37 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useAccount } from 'wagmi';
 import { useStore } from '@/store/useStore';
+import { useMarketData } from '@/hooks/useMarket';
+import { useOpenPosition, useCancelOrder, useClosePosition, useTradePrecheck } from '@/hooks/useTrade';
+import { usePositions } from '@/hooks/usePositions';
+import { useOrders } from '@/hooks/useOrders';
 import { PriceDisplay } from '@/components/shade/PriceDisplay';
 import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
 import { EncryptedField } from '@/components/shade/EncryptedField';
 import { DecryptButton } from '@/components/shade/DecryptButton';
 import { PoolBadge } from '@/components/shade/PoolBadge';
 import { LeverageSelector } from '@/components/shade/LeverageSelector';
-import { HeatmapBar } from '@/components/shade/HeatmapBar';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
-import { TrendingUp, TrendingDown, X as XIcon, Info, Shield } from 'lucide-react';
+import { TrendingUp, TrendingDown, X as XIcon, Shield, AlertTriangle } from 'lucide-react';
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, type IChartApi } from 'lightweight-charts';
+
+// Bridges injected wallet state (wagmi) → Zustand store
+// FHE token balances are encrypted — sync only connection state.
+function useWalletSync() {
+  const { address, isConnected } = useAccount();
+  const syncWallet = useStore((s) => s.syncWallet);
+
+  useEffect(() => {
+    syncWallet({ connected: isConnected, address: address ?? null });
+  }, [isConnected, address, syncWallet]);
+}
 
 // --- Chart Component ---
 function TradingChart() {
   const chartRef = useRef<HTMLDivElement>(null);
-  const chartApi = useRef<IChartApi | null>(null);
-  const { market } = useStore();
+  const { market, updateMarket } = useStore();
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -31,54 +45,52 @@ function TradingChart() {
       width: chartRef.current.clientWidth,
       height: 400,
     });
-    chartApi.current = chart;
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e', downColor: '#ef4444', borderDownColor: '#ef4444', borderUpColor: '#22c55e',
       wickDownColor: '#ef4444', wickUpColor: '#22c55e',
     });
 
-    // Generate mock candle data
-    const now = Math.floor(Date.now() / 1000);
-    const candles = [];
-    let price = 3500;
-    for (let i = 200; i >= 0; i--) {
-      const time = now - i * 3600;
-      const open = price;
-      const change = (Math.random() - 0.48) * 40;
-      const close = open + change;
-      const high = Math.max(open, close) + Math.random() * 20;
-      const low = Math.min(open, close) - Math.random() * 20;
-      candles.push({ time, open, high, low, close });
-      price = close;
-    }
-    candleSeries.setData(candles as any);
+    let priceLineRef: ReturnType<typeof candleSeries.createPriceLine> | null = null;
 
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      color: 'hsl(160, 90%, 43%)',
-      priceFormat: { type: 'volume' },
-      priceScaleId: '',
-    });
-    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
-    
-    const volumes = candles.map(c => ({
-      time: c.time,
-      value: Math.random() * 5000 + 500,
-      color: c.close >= c.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
-    }));
-    volumeSeries.setData(volumes as any);
+    // Fetch OHLC from CoinGecko public API (ETH/USD, 7 days, hourly)
+    fetch('https://api.coingecko.com/api/v3/coins/ethereum/ohlc?vs_currency=usd&days=7')
+      .then(r => r.json())
+      .then((data: [number, number, number, number, number][]) => {
+        const candles = data.map(([ts, o, h, l, c]) => ({
+          time: Math.floor(ts / 1000) as any,
+          open: o, high: h, low: l, close: c,
+        }));
 
-    // Mark price line
-    candleSeries.createPriceLine({
-      price: market.markPrice,
-      color: 'hsl(160, 90%, 43%)',
-      lineWidth: 1,
-      lineStyle: 2,
-      axisLabelVisible: true,
-      title: 'Mark',
-    });
+        if (candles.length === 0) return;
+        candleSeries.setData(candles);
 
-    chart.timeScale().fitContent();
+        const latest = candles[candles.length - 1];
+        const prev24h = candles[Math.max(0, candles.length - 24)];
+        const change24h = ((latest.close - prev24h.open) / prev24h.open) * 100;
+        const high24h = Math.max(...candles.slice(-24).map(c => c.high));
+        const low24h = Math.min(...candles.slice(-24).map(c => c.low));
+
+        updateMarket({
+          markPrice: latest.close,
+          indexPrice: latest.close,
+          change24h: parseFloat(change24h.toFixed(2)),
+          high24h,
+          low24h,
+        });
+
+        priceLineRef = candleSeries.createPriceLine({
+          price: latest.close,
+          color: 'hsl(160, 90%, 43%)',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: 'Mark',
+        });
+
+        chart.timeScale().fitContent();
+      })
+      .catch(console.error);
 
     const handleResize = () => {
       if (chartRef.current) chart.applyOptions({ width: chartRef.current.clientWidth });
@@ -142,15 +154,40 @@ function TickerBar() {
 // --- Order Panel ---
 function OrderPanel() {
   const [side, setSide] = useState<'long' | 'short'>('long');
-  const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop'>('market');
+  const [orderType, setOrderType] = useState<'market' | 'limit'>('market');
   const [collateral, setCollateral] = useState('');
   const [leverage, setLeverage] = useState(5);
   const [limitPrice, setLimitPrice] = useState('');
-  const { wallet, activePool, market } = useStore();
+  const { wallet, market } = useStore();
+
+  const { execute, status, error, reset } = useOpenPosition();
+
+  // Reset form after confirmed
+  useEffect(() => {
+    if (status === 'confirmed') {
+      setCollateral('');
+      setLimitPrice('');
+      setTimeout(reset, 3000);
+    }
+  }, [status, reset]);
 
   const collateralNum = parseFloat(collateral) || 0;
   const size = collateralNum * leverage;
   const sizeInAsset = size / market.markPrice;
+
+  const { warnings, ready: precheckReady } = useTradePrecheck(collateralNum, leverage);
+
+  const isSubmitting = status === 'setting_operator' || status === 'encrypting' || status === 'submitting';
+  const buttonLabel = () => {
+    if (!wallet.connected) return 'Connect Wallet';
+    if (status === 'setting_operator') return 'Setting Operator…';
+    if (status === 'encrypting') return 'Encrypting…';
+    if (status === 'submitting') return 'Confirming…';
+    if (status === 'fhe_decrypt_sent') return 'Awaiting CoFHE decrypt…';
+    if (status === 'confirmed') return 'Order Placed!';
+    if (status === 'error') return 'Failed — Retry';
+    return `${side === 'long' ? 'Long' : 'Short'} ${market.pair}`;
+  };
 
   return (
     <div className="shade-card p-4 space-y-4 h-full">
@@ -178,7 +215,7 @@ function OrderPanel() {
 
       {/* Order type tabs */}
       <div className="flex gap-1 p-0.5 bg-secondary rounded-md">
-        {(['market', 'limit', 'stop'] as const).map(t => (
+        {(['market', 'limit'] as const).map(t => (
           <button
             key={t}
             onClick={() => setOrderType(t)}
@@ -195,7 +232,7 @@ function OrderPanel() {
       {/* Limit price */}
       {orderType !== 'market' && (
         <div className="space-y-1.5">
-          <label className="text-xs text-muted-foreground">{orderType === 'limit' ? 'Limit' : 'Stop'} Price</label>
+          <label className="text-xs text-muted-foreground">Limit Price</label>
           <div className="relative">
             <input
               type="number"
@@ -214,7 +251,7 @@ function OrderPanel() {
         <div className="flex items-center justify-between">
           <label className="text-xs text-muted-foreground">Collateral</label>
           <span className="text-xs text-muted-foreground font-mono">
-            Balance: {activePool === 'pool1' ? `${wallet.balanceUSDC.toLocaleString()} USDC` : `${wallet.balanceFHE.toLocaleString()} FHE`}
+            Balance: <span className="text-shade-teal/70">encrypted</span>
           </span>
         </div>
         <div className="relative">
@@ -226,7 +263,7 @@ function OrderPanel() {
             className="w-full bg-secondary border border-border rounded-md px-3 py-2 text-sm font-mono text-foreground placeholder:text-shade-text-muted focus:outline-none focus:border-shade-teal/50"
           />
           <button
-            onClick={() => setCollateral(activePool === 'pool1' ? wallet.balanceUSDC.toString() : wallet.balanceFHE.toString())}
+            onClick={() => setCollateral(wallet.balanceFHE.toString())}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-shade-teal hover:text-shade-teal/80"
           >
             MAX
@@ -268,24 +305,52 @@ function OrderPanel() {
       <div className="flex items-start gap-2 p-2.5 rounded-md bg-shade-teal/5 border border-shade-teal/10">
         <Shield className="w-3.5 h-3.5 text-shade-teal mt-0.5 shrink-0" />
         <p className="text-[11px] text-shade-text-secondary leading-relaxed">
-          {activePool === 'pool1'
-            ? 'Your position size and PnL are encrypted via FHE. Only you can decrypt.'
-            : 'Pool 2: Maximum privacy. Your collateral balance, position, and PnL are all FHE-encrypted.'
-          }
+          Maximum privacy: your collateral, position size, entry price, and PnL are all FHE-encrypted on-chain.
         </p>
       </div>
 
+      {/* Pre-flight warnings — shown before MetaMask is opened */}
+      {warnings.map((w, i) => (
+        <div key={i} className="flex items-start gap-2 p-2.5 rounded-md bg-shade-amber/10 border border-shade-amber/20">
+          <AlertTriangle className="w-3.5 h-3.5 text-shade-amber mt-0.5 shrink-0" />
+          <p className="text-[11px] text-shade-amber leading-relaxed font-mono">{w}</p>
+        </div>
+      ))}
+
+      {/* Error */}
+      {error && (
+        <p className="text-xs text-shade-red bg-shade-red/10 border border-shade-red/20 rounded-md px-3 py-2 break-all">
+          {error}
+        </p>
+      )}
+
+      {/* FHE task confirmation notice */}
+      {status === 'fhe_decrypt_sent' && (
+        <p className="text-xs rounded-md px-3 py-2 border text-shade-amber bg-shade-amber/10 border-shade-amber/20">
+          Decrypt task submitted. CoFHE will open your position in ~15-30s.
+        </p>
+      )}
+
       {/* CTA */}
       <Button
+        onClick={() => execute({
+          collateral: collateralNum,
+          leverage,
+          isLong: side === 'long',
+          orderType,
+          triggerPrice: limitPrice ? parseFloat(limitPrice) : undefined,
+        })}
         className={cn(
           'w-full font-semibold text-sm py-5',
-          side === 'long'
-            ? 'bg-shade-green hover:bg-shade-green/90 text-background'
-            : 'bg-shade-red hover:bg-shade-red/90 text-foreground'
+          status === 'confirmed'
+            ? 'bg-shade-teal hover:bg-shade-teal/90 text-background'
+            : side === 'long'
+              ? 'bg-shade-green hover:bg-shade-green/90 text-background'
+              : 'bg-shade-red hover:bg-shade-red/90 text-foreground'
         )}
-        disabled={!wallet.connected || collateralNum <= 0}
+        disabled={!wallet.connected || collateralNum <= 0 || isSubmitting || status === 'fhe_decrypt_sent' || !precheckReady}
       >
-        {!wallet.connected ? 'Connect Wallet' : `${side === 'long' ? 'Long' : 'Short'} ${market.pair}`}
+        {buttonLabel()}
       </Button>
     </div>
   );
@@ -293,10 +358,10 @@ function OrderPanel() {
 
 // --- Position Panel ---
 function PositionPanel() {
-  const { positions, decryptPosition, activePool } = useStore();
-  const poolPositions = positions.filter(p => p.pool === activePool);
+  const { positions, decryptPosition } = useStore();
+  const { execute: closePosition, status: closeStatus } = useClosePosition();
 
-  if (poolPositions.length === 0) {
+  if (positions.length === 0) {
     return (
       <div className="shade-card p-6 text-center">
         <p className="text-sm text-muted-foreground">No open positions</p>
@@ -304,10 +369,14 @@ function PositionPanel() {
     );
   }
 
+  const collateralLabel = (v: number) => `${v.toFixed(4)} FHE`;
+  const notionalLabel   = (v: number) => `${v.toFixed(4)} FHE`;
+
   return (
     <div className="space-y-3">
-      {poolPositions.map((pos) => (
+      {positions.map((pos) => (
         <div key={pos.id} className="shade-card p-4 space-y-3">
+          {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm">{pos.pair}</span>
@@ -322,13 +391,22 @@ function PositionPanel() {
             <DecryptButton status={pos.status} onDecrypt={() => decryptPosition(pos.id)} />
           </div>
 
+          {/* Plaintext fields from PositionOpened event */}
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div>
-              <span className="text-muted-foreground">Size</span>
-              <div className="mt-0.5">
-                <EncryptedField value={`${pos.size} ETH`} status={pos.status} className="text-foreground" />
-              </div>
+              <span className="text-muted-foreground">Notional</span>
+              <p className="mt-0.5 font-mono text-foreground">
+                {pos.size > 0 ? notionalLabel(pos.size) : '—'}
+              </p>
             </div>
+            <div>
+              <span className="text-muted-foreground">Collateral</span>
+              <p className="mt-0.5 font-mono text-foreground">
+                {pos.collateral > 0 ? collateralLabel(pos.collateral) : '—'}
+              </p>
+            </div>
+
+            {/* Encrypted fields — revealed only after CoFHE decrypt-for-view */}
             <div>
               <span className="text-muted-foreground">PnL</span>
               <div className="mt-0.5">
@@ -340,31 +418,28 @@ function PositionPanel() {
               </div>
             </div>
             <div>
-              <span className="text-muted-foreground">Entry</span>
+              <span className="text-muted-foreground">Entry Price</span>
               <div className="mt-0.5">
-                <EncryptedField value={`$${pos.entryPrice.toLocaleString()}`} status={pos.status} className="text-foreground" />
-              </div>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Liq. Price</span>
-              <div className="mt-0.5">
-                <EncryptedField value={`$${pos.liquidationPrice.toLocaleString()}`} status={pos.status} className="text-shade-red" />
+                <EncryptedField value="encrypted" status={pos.status} className="text-foreground" />
               </div>
             </div>
           </div>
 
-          {/* Liquidation risk bar */}
-          <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Liquidation Risk</span>
-            <HeatmapBar value={Math.abs(pos.markPrice - pos.liquidationPrice) / pos.markPrice < 0.1 ? 0.8 : 0.2} />
+          {/* Actions — close does not require decryption */}
+          <div className="flex gap-2 pt-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs flex-1"
+              disabled={closeStatus === 'submitting'}
+              onClick={() => closePosition(pos.positionKey)}
+            >
+              {closeStatus === 'submitting' ? 'Closing…' : 'Close Position'}
+            </Button>
+            <Button variant="outline" size="sm" className="text-xs border-shade-teal/30 text-shade-teal">
+              Share Permit
+            </Button>
           </div>
-
-          {pos.status === 'decrypted' && (
-            <div className="flex gap-2 pt-1">
-              <Button variant="outline" size="sm" className="text-xs flex-1">Close Position</Button>
-              <Button variant="outline" size="sm" className="text-xs border-shade-teal/30 text-shade-teal">Share Permit</Button>
-            </div>
-          )}
         </div>
       ))}
     </div>
@@ -373,16 +448,16 @@ function PositionPanel() {
 
 // --- Orders Tab ---
 function OrdersTab() {
-  const { orders, cancelOrder, activePool } = useStore();
-  const poolOrders = orders.filter(o => o.pool === activePool);
+  const { orders, cancelOrder } = useStore();
+  const { execute: cancelOnChain, status: cancelStatus } = useCancelOrder();
 
-  if (poolOrders.length === 0) {
+  if (orders.length === 0) {
     return <p className="text-sm text-muted-foreground text-center py-6">No pending orders</p>;
   }
 
   return (
     <div className="space-y-2">
-      {poolOrders.map((order) => (
+      {orders.map((order) => (
         <div key={order.id} className="flex items-center justify-between p-3 bg-secondary/50 rounded-md border border-border">
           <div className="flex items-center gap-3">
             <span className={cn(
@@ -395,7 +470,14 @@ function OrdersTab() {
             <span className="text-xs text-muted-foreground uppercase">{order.type}</span>
             <span className="text-xs font-mono text-foreground">@ ${order.price.toLocaleString()}</span>
           </div>
-          <button onClick={() => cancelOrder(order.id)} className="p-1 text-muted-foreground hover:text-shade-red">
+          <button
+            onClick={async () => {
+              await cancelOnChain(parseInt(order.id));
+              cancelOrder(order.id);
+            }}
+            disabled={cancelStatus === 'submitting'}
+            className="p-1 text-muted-foreground hover:text-shade-red disabled:opacity-40"
+          >
             <XIcon className="w-4 h-4" />
           </button>
         </div>
@@ -406,45 +488,21 @@ function OrdersTab() {
 
 // --- Trade Page ---
 export default function TradePage() {
-  const { activePool, setActivePool, market } = useStore();
-
-  // Simulate price updates
-  useEffect(() => {
-    const { updatePrice } = useStore.getState();
-    const interval = setInterval(() => {
-      const delta = (Math.random() - 0.48) * 5;
-      const current = useStore.getState().market.markPrice;
-      updatePrice(Math.round((current + delta) * 100) / 100);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
+  const { market } = useStore();
+  useWalletSync();
+  useMarketData(); // polls PriceOracle + FundingRateManager on-chain
+  usePositions();  // reads PositionOpened events + checks exists on-chain
+  useOrders();     // reads OrderCreated events + checks isActive on-chain
 
   return (
     <div className="animate-fade-in">
       <TickerBar />
 
-      {/* Pool selector */}
+      {/* Pool indicator */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-shade-bg-primary">
-        {(['pool1', 'pool2'] as const).map(pool => (
-          <button
-            key={pool}
-            onClick={() => setActivePool(pool)}
-            className={cn(
-              'px-3 py-1.5 text-xs font-mono rounded-md border transition-all',
-              activePool === pool
-                ? 'border-shade-teal/50 bg-shade-teal/10 text-shade-teal'
-                : 'border-border text-muted-foreground hover:text-foreground hover:border-shade-teal/20'
-            )}
-          >
-            {pool === 'pool1' ? '⬡ Pool 1 · USDC' : '⬡ Pool 2 · FHE Token'}
-          </button>
-        ))}
-        {activePool === 'pool2' && (
-          <div className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded bg-shade-amber/10 border border-shade-amber/20">
-            <Info className="w-3 h-3 text-shade-amber" />
-            <span className="text-[10px] text-shade-amber">Pool 2: Enhanced privacy — collateral encrypted</span>
-          </div>
-        )}
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-shade-teal/10 border border-shade-teal/20">
+          <span className="text-[10px] text-shade-teal font-mono">⬡ FHE Pool · FHE Token / ETH — Maximum Privacy</span>
+        </div>
       </div>
 
       <div className="max-w-[1600px] mx-auto p-4">

@@ -1,10 +1,17 @@
+import { useAccount } from 'wagmi';
 import { useStore } from '@/store/useStore';
 import { Button } from '@/components/ui/button';
-import { PoolBadge } from '@/components/shade/PoolBadge';
 import { EncryptedField } from '@/components/shade/EncryptedField';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
-import { TrendingUp, AlertTriangle, Info } from 'lucide-react';
+import { TrendingUp, AlertTriangle, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import {
+  useVaultStats,
+  useTokenBalance,
+  useAddLiquidity,
+  useRemoveLiquidity,
+  type VaultTxStatus,
+} from '@/hooks/useVault';
 
 function VaultUtilMeter({ value }: { value: number }) {
   return (
@@ -15,7 +22,8 @@ function VaultUtilMeter({ value }: { value: number }) {
       </div>
       <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
         <div
-          className={cn('h-full rounded-full transition-all', value < 0.7 ? 'bg-shade-green' : value < 0.9 ? 'bg-shade-amber' : 'bg-shade-red')}
+          className={cn('h-full rounded-full transition-all',
+            value < 0.7 ? 'bg-shade-green' : value < 0.9 ? 'bg-shade-amber' : 'bg-shade-red')}
           style={{ width: `${value * 100}%` }}
         />
       </div>
@@ -23,39 +31,103 @@ function VaultUtilMeter({ value }: { value: number }) {
   );
 }
 
-export default function EarnPage() {
-  const { activePool, setActivePool, wallet, lpPosition } = useStore();
-  const [amount, setAmount] = useState('');
+function TxStatusBar({ status, error, onReset }: { status: VaultTxStatus; error: string | null; onReset: () => void }) {
+  if (status === 'idle') return null;
 
-  const vaultStats = {
-    pool1: { tvl: 847000000, util: 0.62, apy7d: 12.4, apy30d: 11.8 },
-    pool2: { tvl: 124000000, util: 0.74, apy7d: 18.7, apy30d: 16.2 },
+  const messages: Record<VaultTxStatus, string> = {
+    idle:              '',
+    setting_operator:  'Setting operator permission…',
+    encrypting:        'Encrypting inputs…',
+    submitting:        'Submitting transaction…',
+    submitting_check:  'Submitting withdraw check…',
+    awaiting_decrypt:  'Waiting for CoFHE decrypt (~15-30s)…',
+    confirmed:         'Transaction confirmed!',
+    error:             error ?? 'Transaction failed',
   };
 
-  const stats = vaultStats[activePool];
+  const isError = status === 'error';
+  const isOk    = status === 'confirmed';
+
+  return (
+    <div className={cn('flex items-center gap-2 p-3 rounded-md text-xs',
+      isOk    ? 'bg-shade-green/10 border border-shade-green/20 text-shade-green' :
+      isError ? 'bg-shade-red/10 border border-shade-red/20 text-shade-red' :
+                'bg-shade-teal/10 border border-shade-teal/20 text-shade-teal'
+    )}>
+      {isOk    ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> :
+       isError ? <XCircle      className="w-3.5 h-3.5 shrink-0" /> :
+                 <Loader2      className="w-3.5 h-3.5 shrink-0 animate-spin" />}
+      <span className="flex-1 font-mono">{messages[status]}</span>
+      {(isOk || isError) && (
+        <button onClick={onReset} className="underline underline-offset-2">dismiss</button>
+      )}
+    </div>
+  );
+}
+
+export default function EarnPage() {
+  const { lpPosition } = useStore();
+  const { isConnected } = useAccount();
+
+  const [tab, setTab]       = useState<'deposit' | 'withdraw'>('deposit');
+  const [amount, setAmount] = useState('');
+
+  // FHE vault and token balances are always encrypted
+  const { tvl, utilization, isEncrypted: statsEncrypted } = useVaultStats();
+  const { balance: tokenBalance, isEncrypted: balanceEncrypted } = useTokenBalance();
+
+  const apy = { apy7d: 18.7, apy30d: 16.2 };
+
+  const deposit  = useAddLiquidity();
+  const withdraw = useRemoveLiquidity();
+
+  const active = tab === 'deposit' ? deposit : withdraw;
+  const isBusy = active.status !== 'idle' && active.status !== 'confirmed' && active.status !== 'error';
+
+  const balanceLabel = balanceEncrypted
+    ? null
+    : tokenBalance != null
+      ? `${tokenBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} FHE`
+      : '—';
+
+  function handleMax() {
+    if (!balanceEncrypted && tokenBalance != null) setAmount(tokenBalance.toFixed(6));
+  }
+
+  function handleSubmit() {
+    if (!amount || parseFloat(amount) <= 0) return;
+    if (tab === 'deposit') deposit.execute(amount);
+    else withdraw.execute(amount);
+  }
+
+  function depositButtonLabel() {
+    if (!isConnected) return 'Connect Wallet';
+    if (active.status === 'setting_operator') return 'Setting Operator…';
+    if (active.status === 'submitting') return 'Depositing…';
+    if (active.status === 'confirmed') return 'Deposited!';
+    return 'Set Operator & Deposit';
+  }
+
+  function withdrawButtonLabel() {
+    if (!isConnected) return 'Connect Wallet';
+    if (active.status === 'submitting_check') return 'Submitting Check…';
+    if (active.status === 'awaiting_decrypt') return 'Awaiting CoFHE Decrypt…';
+    if (active.status === 'submitting') return 'Withdrawing…';
+    if (active.status === 'confirmed') return 'Withdrawn!';
+    return 'Withdraw Liquidity';
+  }
 
   return (
     <div className="max-w-[1200px] mx-auto p-4 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-foreground">Earn</h1>
-        <div className="flex gap-2">
-          {(['pool1', 'pool2'] as const).map(pool => (
-            <button
-              key={pool}
-              onClick={() => setActivePool(pool)}
-              className={cn(
-                'px-3 py-1.5 text-xs font-mono rounded-md border transition-all',
-                activePool === pool ? 'border-shade-teal/50 bg-shade-teal/10 text-shade-teal' : 'border-border text-muted-foreground hover:border-shade-teal/20'
-              )}
-            >
-              {pool === 'pool1' ? 'Pool 1 · USDC' : 'Pool 2 · FHE'}
-            </button>
-          ))}
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-shade-teal/10 border border-shade-teal/20">
+          <span className="text-[10px] text-shade-teal font-mono">⬡ FHE Pool · FHE Token / ETH</span>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6">
-        {/* Left: Vault Stats + Performance */}
+        {/* Left */}
         <div className="space-y-4">
           {/* Vault Stats */}
           <div className="shade-card p-5 space-y-4">
@@ -65,20 +137,40 @@ export default function EarnPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div>
                 <span className="text-xs text-muted-foreground">TVL</span>
-                <p className="text-lg font-mono font-semibold text-foreground mt-0.5">
-                  ${(stats.tvl / 1e6).toFixed(0)}M
-                </p>
+                <div className="mt-0.5">
+                  {statsEncrypted ? (
+                    <EncryptedField value="Encrypted" status="encrypted" />
+                  ) : tvl != null ? (
+                    <p className="text-lg font-mono font-semibold text-foreground">
+                      ${tvl >= 1e6 ? `${(tvl / 1e6).toFixed(1)}M` : tvl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    </p>
+                  ) : (
+                    <p className="text-lg font-mono font-semibold text-muted-foreground">—</p>
+                  )}
+                </div>
               </div>
               <div>
                 <span className="text-xs text-muted-foreground">7d APY</span>
-                <p className="text-lg font-mono font-semibold text-shade-green mt-0.5">{stats.apy7d}%</p>
+                <p className="text-lg font-mono font-semibold text-shade-green mt-0.5">{apy.apy7d}%</p>
               </div>
               <div>
                 <span className="text-xs text-muted-foreground">30d APY</span>
-                <p className="text-lg font-mono font-semibold text-shade-green mt-0.5">{stats.apy30d}%</p>
+                <p className="text-lg font-mono font-semibold text-shade-green mt-0.5">{apy.apy30d}%</p>
               </div>
               <div>
-                <VaultUtilMeter value={stats.util} />
+                {statsEncrypted ? (
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground">Utilisation</span>
+                    <EncryptedField value="Encrypted" status="encrypted" />
+                  </div>
+                ) : utilization != null ? (
+                  <VaultUtilMeter value={utilization} />
+                ) : (
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground">Utilisation</span>
+                    <p className="text-sm font-mono text-muted-foreground">Loading…</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -90,28 +182,24 @@ export default function EarnPage() {
               <div>
                 <span className="text-xs text-muted-foreground">Deposited</span>
                 <div className="mt-1">
-                  {activePool === 'pool2' ? (
-                    <EncryptedField value={`$${lpPosition.pool2.toLocaleString()}`} status="encrypted" />
-                  ) : (
-                    <p className="font-mono text-foreground">${lpPosition.pool1.toLocaleString()}</p>
-                  )}
+                  <EncryptedField value={`${lpPosition.deposited.toLocaleString()} FHE`} status="encrypted" />
                 </div>
               </div>
               <div>
                 <span className="text-xs text-muted-foreground">Current APY</span>
                 <p className="font-mono text-shade-green mt-1">
-                  {activePool === 'pool1' ? lpPosition.pool1Apy : lpPosition.pool2Apy}%
+                  {lpPosition.apy}%
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Revenue chart placeholder */}
+          {/* Revenue chart */}
           <div className="shade-card p-5">
             <h2 className="text-sm font-semibold text-foreground mb-4">Pool Performance</h2>
             <div className="h-48 flex items-center justify-center border border-border/50 rounded-md bg-shade-bg-secondary">
               <div className="text-center space-y-2">
-                <div className="flex gap-1 justify-center">
+                <div className="flex gap-1 justify-center items-end">
                   {Array.from({ length: 30 }).map((_, i) => (
                     <div
                       key={i}
@@ -126,17 +214,40 @@ export default function EarnPage() {
           </div>
         </div>
 
-        {/* Right: Add Liquidity */}
+        {/* Right — action panel */}
         <div className="space-y-4">
           <div className="shade-card p-5 space-y-4">
-            <h2 className="text-sm font-semibold text-foreground">Add Liquidity</h2>
+            {/* Deposit / Withdraw tabs */}
+            <div className="flex gap-1 p-1 bg-secondary rounded-md">
+              {(['deposit', 'withdraw'] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => { setTab(t); setAmount(''); active.reset(); }}
+                  className={cn(
+                    'flex-1 py-1.5 text-xs font-semibold rounded transition-all capitalize',
+                    tab === t
+                      ? 'bg-shade-bg-primary text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
 
+            {/* Amount input */}
             <div className="space-y-1.5">
               <div className="flex justify-between">
                 <label className="text-xs text-muted-foreground">Amount</label>
-                <span className="text-xs text-muted-foreground font-mono">
-                  Balance: {activePool === 'pool1' ? `${wallet.balanceUSDC.toLocaleString()} USDC` : `${wallet.balanceFHE.toLocaleString()} FHE`}
-                </span>
+                {isConnected && (
+                  <span className="text-xs text-muted-foreground font-mono">
+                    {balanceEncrypted ? (
+                      <EncryptedField value="Balance: encrypted" status="encrypted" />
+                    ) : (
+                      <>Balance: {balanceLabel ?? '—'}</>
+                    )}
+                  </span>
+                )}
               </div>
               <div className="relative">
                 <input
@@ -144,33 +255,55 @@ export default function EarnPage() {
                   value={amount}
                   onChange={e => setAmount(e.target.value)}
                   placeholder="0.00"
-                  className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-mono text-foreground placeholder:text-shade-text-muted focus:outline-none focus:border-shade-teal/50"
+                  disabled={isBusy}
+                  className="w-full bg-secondary border border-border rounded-md px-3 py-2.5 text-sm font-mono text-foreground placeholder:text-shade-text-muted focus:outline-none focus:border-shade-teal/50 disabled:opacity-50"
                 />
-                <button onClick={() => setAmount(activePool === 'pool1' ? wallet.balanceUSDC.toString() : wallet.balanceFHE.toString())} className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-shade-teal">MAX</button>
+                {tab === 'deposit' && !balanceEncrypted && tokenBalance != null && (
+                  <button
+                    onClick={handleMax}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-shade-teal"
+                  >
+                    MAX
+                  </button>
+                )}
               </div>
             </div>
 
-            {parseFloat(amount) > 0 && (
+            {/* Preview */}
+            {parseFloat(amount) > 0 && tab === 'deposit' && (
               <div className="p-3 bg-secondary/50 rounded-md space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Estimated APY</span>
-                  <span className="font-mono text-shade-green">{activePool === 'pool1' ? stats.apy7d : stats.apy7d}%</span>
+                  <span className="font-mono text-shade-green">{apy.apy7d}%</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Est. Monthly Yield</span>
                   <span className="font-mono text-foreground">
-                    ${((parseFloat(amount) * stats.apy7d / 100) / 12).toFixed(2)}
+                    ${((parseFloat(amount) * apy.apy7d / 100) / 12).toFixed(2)}
                   </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Pre-req</span>
+                  <span className="font-mono text-shade-amber">setOperator required</span>
                 </div>
               </div>
             )}
 
-            <Button className="w-full gradient-teal text-shade-bg-primary font-semibold" disabled={!wallet.connected || !parseFloat(amount)}>
-              {wallet.connected ? 'Deposit Liquidity' : 'Connect Wallet'}
+            {/* Status bar */}
+            <TxStatusBar status={active.status} error={active.error} onReset={active.reset} />
+
+            {/* CTA */}
+            <Button
+              className="w-full gradient-teal text-shade-bg-primary font-semibold"
+              disabled={!isConnected || !parseFloat(amount) || isBusy}
+              onClick={handleSubmit}
+            >
+              {isBusy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {tab === 'deposit' ? depositButtonLabel() : withdrawButtonLabel()}
             </Button>
           </div>
 
-          {/* Risk Callout */}
+          {/* Risk callout */}
           <div className="shade-card p-4 border-shade-amber/20 space-y-2">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-shade-amber" />

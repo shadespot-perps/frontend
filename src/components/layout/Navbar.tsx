@@ -1,8 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { useStore } from '@/store/useStore';
-import { Button } from '@/components/ui/button';
-import { Wallet, Menu, X } from 'lucide-react';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { Menu, X } from 'lucide-react';
 import { useState } from 'react';
 
 const navItems = [
@@ -16,7 +15,6 @@ const navItems = [
 
 export function Navbar() {
   const { pathname } = useLocation();
-  const { wallet, connectWallet, disconnectWallet } = useStore();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
@@ -63,25 +61,7 @@ export function Navbar() {
           </div>
 
           {/* Wallet */}
-          {wallet.connected ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={disconnectWallet}
-              className="font-mono text-xs border-border"
-            >
-              <Wallet className="w-3.5 h-3.5 mr-1.5 text-shade-teal" />
-              {wallet.address}
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              onClick={connectWallet}
-              className="gradient-teal text-shade-bg-primary font-semibold text-xs hover:opacity-90"
-            >
-              Connect Wallet
-            </Button>
-          )}
+          <ConnectButton />
 
           {/* Mobile menu toggle */}
           <button
