@@ -57,21 +57,24 @@ export function useDecryptPosition() {
       });
 
       const pmPos = (() => {
-        const pmAny = pmPosRaw as any;
+        const pmAny = pmPosRaw as unknown as Record<number, unknown> | unknown[];
 
         // viem tuple outputs often come back as an array-like object with numeric indices.
         // We decode by indices to avoid relying on named keys.
-        if (pmAny && (Array.isArray(pmPosRaw) || pmAny[0] !== undefined)) {
-          const owner = pmAny[0] as `0x${string}`;
-          const indexToken = pmAny[1] as `0x${string}`;
-          const size = pmAny[2] as `0x${string}` | bigint;
-          const collateral = pmAny[3] as `0x${string}` | bigint;
-          const entryPrice = pmAny[4] as `0x${string}` | bigint;
-          const entryFundingRateBiased = pmAny[5] as `0x${string}` | bigint;
-          const eLeverage = pmAny[6] as `0x${string}` | bigint;
-          const isLong = pmAny[7] as `0x${string}` | bigint;
-          const exists = pmAny[8] as boolean;
-          const leverage = pmAny[9] as bigint;
+        const hasIndex0 = (v: unknown): v is Record<number, unknown> =>
+          typeof v === 'object' && v !== null && 0 in (v as Record<number, unknown>);
+
+        if (pmAny && (Array.isArray(pmPosRaw) || hasIndex0(pmAny))) {
+          const owner = (pmAny as Record<number, unknown>)[0] as `0x${string}`;
+          const indexToken = (pmAny as Record<number, unknown>)[1] as `0x${string}`;
+          const size = (pmAny as Record<number, unknown>)[2] as `0x${string}` | bigint;
+          const collateral = (pmAny as Record<number, unknown>)[3] as `0x${string}` | bigint;
+          const entryPrice = (pmAny as Record<number, unknown>)[4] as `0x${string}` | bigint;
+          const entryFundingRateBiased = (pmAny as Record<number, unknown>)[5] as `0x${string}` | bigint;
+          const eLeverage = (pmAny as Record<number, unknown>)[6] as `0x${string}` | bigint;
+          const isLong = (pmAny as Record<number, unknown>)[7] as `0x${string}` | bigint;
+          const exists = (pmAny as Record<number, unknown>)[8] as boolean;
+          const leverage = (pmAny as Record<number, unknown>)[9] as bigint;
           return { owner, indexToken, size, collateral, entryPrice, entryFundingRateBiased, eLeverage, isLong, exists, leverage };
         }
 

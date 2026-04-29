@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { TrendingUp, TrendingDown, X as XIcon, Shield, AlertTriangle } from 'lucide-react';
-import { createChart, ColorType, CandlestickSeries, HistogramSeries, type IChartApi } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, HistogramSeries, type IChartApi, type UTCTimestamp } from 'lightweight-charts';
 
 // Bridges injected wallet state (wagmi) → Zustand store
 // FHE token balances are encrypted — sync only connection state.
@@ -59,7 +59,7 @@ function TradingChart() {
       .then(r => r.json())
       .then((data: [number, number, number, number, number][]) => {
         const candles = data.map(([ts, o, h, l, c]) => ({
-          time: Math.floor(ts / 1000) as any,
+          time: Math.floor(ts / 1000) as UTCTimestamp,
           open: o, high: h, low: l, close: c,
         }));
 
@@ -102,7 +102,7 @@ function TradingChart() {
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, []);
+  }, [updateMarket]);
 
   return <div ref={chartRef} className="w-full" />;
 }
@@ -110,6 +110,7 @@ function TradingChart() {
 // --- Ticker Bar ---
 function TickerBar() {
   const { market } = useStore();
+  const loaded = market.markPrice > 0;
   return (
     <div className="flex items-center gap-4 px-4 py-2.5 border-b border-border bg-shade-bg-secondary overflow-x-auto">
       <div className="flex items-center gap-2">
@@ -120,33 +121,39 @@ function TickerBar() {
       <div className="flex items-center gap-1">
         <span className="text-xs text-muted-foreground">24h</span>
         <span className={cn('text-xs font-mono', market.change24h >= 0 ? 'text-shade-green' : 'text-shade-red')}>
-          {market.change24h >= 0 ? '+' : ''}{market.change24h}%
+          {loaded ? `${market.change24h >= 0 ? '+' : ''}${market.change24h}%` : '—'}
         </span>
       </div>
       <div className="h-5 w-px bg-border" />
       <div className="flex items-center gap-1">
         <PrivacyBadge level="DP" />
         <span className="text-xs text-muted-foreground">OI</span>
-        <span className="text-xs font-mono text-foreground">${(market.openInterest / 1e9).toFixed(2)}B</span>
+        <span className="text-xs font-mono text-foreground">
+          {loaded && market.openInterest > 0 ? `$${(market.openInterest / 1e9).toFixed(2)}B` : '—'}
+        </span>
       </div>
       <div className="h-5 w-px bg-border" />
       <div className="flex items-center gap-1">
         <PrivacyBadge level="ZK" />
         <span className="text-xs text-muted-foreground">Funding</span>
         <span className={cn('text-xs font-mono', market.fundingRate >= 0 ? 'text-shade-green' : 'text-shade-red')}>
-          {market.fundingRate >= 0 ? '+' : ''}{market.fundingRate}%
+          {loaded ? `${market.fundingRate >= 0 ? '+' : ''}${market.fundingRate}%` : '—'}
         </span>
       </div>
       <div className="h-5 w-px bg-border" />
       <div className="flex items-center gap-1">
         <PrivacyBadge level="ZK" />
         <span className="text-xs text-muted-foreground">Vol</span>
-        <span className="text-xs font-mono text-foreground">${(market.volume24h / 1e6).toFixed(1)}M</span>
+        <span className="text-xs font-mono text-foreground">
+          {loaded && market.volume24h > 0 ? `$${(market.volume24h / 1e6).toFixed(1)}M` : '—'}
+        </span>
       </div>
       <div className="h-5 w-px bg-border" />
       <div className="flex items-center gap-1">
         <span className="text-xs text-muted-foreground">TVL</span>
-        <span className="text-xs font-mono text-foreground">${(market.vaultTVL / 1e6).toFixed(0)}M</span>
+        <span className="text-xs font-mono text-foreground">
+          {loaded && market.vaultTVL > 0 ? `$${(market.vaultTVL / 1e6).toFixed(0)}M` : '—'}
+        </span>
       </div>
     </div>
   );
@@ -174,7 +181,7 @@ function OrderPanel() {
 
   const collateralNum = parseFloat(collateral) || 0;
   const size = collateralNum * leverage;
-  const sizeInAsset = size / market.markPrice;
+  const sizeInAsset = market.markPrice > 0 ? (size / market.markPrice) : 0;
 
   const { warnings, ready: precheckReady } = useTradePrecheck(collateralNum, leverage);
 

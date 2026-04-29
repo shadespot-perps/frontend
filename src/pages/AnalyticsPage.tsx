@@ -1,21 +1,42 @@
 import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
-import { cn } from '@/lib/utils';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
-import { BarChart3, Activity, TrendingUp, Users } from 'lucide-react';
-
-const stats = [
-  { label: 'Long/Short Ratio', value: '1.24', badge: 'DP' as const, icon: Users, sub: '55.4% Long' },
-  { label: 'Funding Rate', value: '+0.0082%', badge: 'ZK' as const, icon: Activity, sub: 'Next: 04:23:17' },
-  { label: '24h Volume', value: '$284.7M', badge: 'ZK' as const, icon: BarChart3, sub: 'ZK-proven aggregate' },
-  { label: 'Open Interest', value: '$1.24B', badge: 'DP' as const, icon: TrendingUp, sub: 'ε = 1.0 noise' },
-];
-
-const fundingData = Array.from({ length: 21 }).map((_, i) => ({
-  epoch: i,
-  rate: (Math.random() - 0.45) * 0.02,
-}));
+import { Activity, BarChart3, TrendingUp, Users } from 'lucide-react';
+import { useStore } from '@/store/useStore';
 
 export default function AnalyticsPage() {
+  const { market } = useStore();
+
+  const stats = [
+    {
+      label: 'Long/Short Ratio',
+      value: '—',
+      badge: 'DP' as const,
+      icon: Users,
+      sub: 'Coming soon',
+    },
+    {
+      label: 'Funding Rate',
+      value: market.markPrice > 0 ? `${market.fundingRate >= 0 ? '+' : ''}${market.fundingRate.toFixed(4)}%` : '—',
+      badge: 'ZK' as const,
+      icon: Activity,
+      sub: 'On-chain (non-ZK) for now',
+    },
+    {
+      label: '24h Volume',
+      value: '—',
+      badge: 'ZK' as const,
+      icon: BarChart3,
+      sub: 'Coming soon',
+    },
+    {
+      label: 'Open Interest',
+      value: market.markPrice > 0 && market.openInterest > 0 ? `$${(market.openInterest / 1e6).toFixed(2)}M` : '—',
+      badge: 'DP' as const,
+      icon: TrendingUp,
+      sub: 'On-chain (non-DP) for now',
+    },
+  ];
+
   return (
     <div className="max-w-[1200px] mx-auto p-4 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -49,67 +70,35 @@ export default function AnalyticsPage() {
       </div>
 
       {/* Liquidation Heatmap */}
-      <div className="shade-card p-5 space-y-4">
+      <div className="shade-card p-5 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-foreground">Liquidation Heatmap</h2>
           <PrivacyBadge level="DP" />
         </div>
-        <div className="flex items-end gap-[2px] h-32">
-          {Array.from({ length: 40 }).map((_, i) => {
-            const intensity = Math.random();
-            const color = intensity < 0.33 ? 'bg-shade-teal' : intensity < 0.66 ? 'bg-shade-amber' : 'bg-shade-red';
-            return (
-              <div
-                key={i}
-                className={cn('flex-1 rounded-sm transition-all', color)}
-                style={{ height: `${10 + intensity * 90}%`, opacity: 0.3 + intensity * 0.7 }}
-                title={`$${(3200 + i * 20).toLocaleString()} — ${(intensity * 50).toFixed(0)} positions`}
-              />
-            );
-          })}
-        </div>
-        <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-          <span>$3,200</span>
-          <span>$3,600</span>
-          <span>$4,000</span>
+        <div className="p-4 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
+          Coming soon — this will show DP bucket aggregates once the analytics pipeline is wired.
         </div>
       </div>
 
       {/* Funding History */}
-      <div className="shade-card p-5 space-y-4">
+      <div className="shade-card p-5 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-foreground">Funding Rate History (8h epochs)</h2>
           <PrivacyBadge level="ZK" />
         </div>
-        <div className="flex items-end justify-center gap-1 h-32">
-          {fundingData.map((d, i) => (
-            <div key={i} className="flex flex-col items-center flex-1">
-              <div
-                className={cn(
-                  'w-full rounded-sm',
-                  d.rate >= 0 ? 'bg-shade-green/60' : 'bg-shade-red/60'
-                )}
-                style={{ height: `${Math.abs(d.rate) * 5000 + 4}px` }}
-              />
-            </div>
-          ))}
+        <div className="p-4 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
+          Coming soon — this will be replaced with a real funding epoch series.
         </div>
       </div>
 
       {/* Volume Chart */}
-      <div className="shade-card p-5 space-y-4">
+      <div className="shade-card p-5 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-foreground">30-Day Volume</h2>
           <PrivacyBadge level="ZK" />
         </div>
-        <div className="flex items-end gap-[2px] h-32">
-          {Array.from({ length: 30 }).map((_, i) => (
-            <div
-              key={i}
-              className="flex-1 bg-shade-teal/40 hover:bg-shade-teal/60 rounded-sm transition-colors"
-              style={{ height: `${20 + Math.random() * 80}%` }}
-            />
-          ))}
+        <div className="p-4 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
+          Coming soon — this will show ZK-proven aggregate volume.
         </div>
       </div>
 

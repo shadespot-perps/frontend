@@ -1,5 +1,4 @@
 import { useAccount } from 'wagmi';
-import { useStore } from '@/store/useStore';
 import { Button } from '@/components/ui/button';
 import { EncryptedField } from '@/components/shade/EncryptedField';
 import { cn } from '@/lib/utils';
@@ -66,7 +65,6 @@ function TxStatusBar({ status, error, onReset }: { status: VaultTxStatus; error:
 }
 
 export default function EarnPage() {
-  const { lpPosition } = useStore();
   const { isConnected } = useAccount();
 
   const [tab, setTab]       = useState<'deposit' | 'withdraw'>('deposit');
@@ -75,8 +73,6 @@ export default function EarnPage() {
   // FHE vault and token balances are always encrypted
   const { tvl, utilization, isEncrypted: statsEncrypted } = useVaultStats();
   const { balance: tokenBalance, isEncrypted: balanceEncrypted } = useTokenBalance();
-
-  const apy = { apy7d: 18.7, apy30d: 16.2 };
 
   const deposit  = useAddLiquidity();
   const { isOperatorSet } = deposit;
@@ -154,11 +150,11 @@ export default function EarnPage() {
               </div>
               <div>
                 <span className="text-xs text-muted-foreground">7d APY</span>
-                <p className="text-lg font-mono font-semibold text-shade-green mt-0.5">{apy.apy7d}%</p>
+                <p className="text-lg font-mono font-semibold text-muted-foreground mt-0.5">—</p>
               </div>
               <div>
                 <span className="text-xs text-muted-foreground">30d APY</span>
-                <p className="text-lg font-mono font-semibold text-shade-green mt-0.5">{apy.apy30d}%</p>
+                <p className="text-lg font-mono font-semibold text-muted-foreground mt-0.5">—</p>
               </div>
               <div>
                 {statsEncrypted ? (
@@ -185,14 +181,12 @@ export default function EarnPage() {
               <div>
                 <span className="text-xs text-muted-foreground">Deposited</span>
                 <div className="mt-1">
-                  <EncryptedField value={`${lpPosition.deposited.toLocaleString()} FHE`} status="encrypted" />
+                  <EncryptedField value="Encrypted" status="encrypted" />
                 </div>
               </div>
               <div>
                 <span className="text-xs text-muted-foreground">Current APY</span>
-                <p className="font-mono text-shade-green mt-1">
-                  {lpPosition.apy}%
-                </p>
+                <p className="font-mono text-muted-foreground mt-1">—</p>
               </div>
             </div>
           </div>
@@ -201,17 +195,11 @@ export default function EarnPage() {
           <div className="shade-card p-5">
             <h2 className="text-sm font-semibold text-foreground mb-4">Pool Performance</h2>
             <div className="h-48 flex items-center justify-center border border-border/50 rounded-md bg-shade-bg-secondary">
-              <div className="text-center space-y-2">
-                <div className="flex gap-1 justify-center items-end">
-                  {Array.from({ length: 30 }).map((_, i) => (
-                    <div
-                      key={i}
-                      className="w-2 bg-shade-teal/40 rounded-sm"
-                      style={{ height: `${20 + Math.random() * 100}px` }}
-                    />
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">30-Day Revenue</p>
+              <div className="text-center space-y-2 px-6">
+                <p className="text-sm text-foreground font-semibold">Coming soon</p>
+                <p className="text-xs text-muted-foreground">
+                  Pool performance charts will appear once on-chain accounting + analytics are wired.
+                </p>
               </div>
             </div>
           </div>
@@ -277,13 +265,11 @@ export default function EarnPage() {
               <div className="p-3 bg-secondary/50 rounded-md space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Estimated APY</span>
-                  <span className="font-mono text-shade-green">{apy.apy7d}%</span>
+                  <span className="font-mono text-muted-foreground">—</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Est. Monthly Yield</span>
-                  <span className="font-mono text-foreground">
-                    ${((parseFloat(amount) * apy.apy7d / 100) / 12).toFixed(2)}
-                  </span>
+                  <span className="font-mono text-muted-foreground">—</span>
                 </div>
                 {!isOperatorSet && (
                   <div className="flex justify-between items-start gap-2">

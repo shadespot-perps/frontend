@@ -37,7 +37,9 @@ export function PriceDisplay({ price, decimals = 2, prefix = '$', className, siz
       flash === 'down' && 'price-down',
       className
     )}>
-      {prefix}{price.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+      {price > 0
+        ? `${prefix}${price.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`
+        : '—'}
     </span>
   );
 }

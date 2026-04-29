@@ -335,6 +335,15 @@ export function useClosePosition() {
 
       // Extract CloseRequested handles from receipt logs (PositionManager emits it).
       const pmAddr = CONTRACTS.positionManager.toLowerCase();
+      type CloseRequestedEvent = {
+        args: {
+          positionKey: `0x${string}`;
+          trader: `0x${string}`;
+          finalAmountHandle: `0x${string}`;
+          sizeHandle: `0x${string}`;
+        };
+      };
+
       const closeLogs = receipt.logs
         .filter(l => l.address.toLowerCase() === pmAddr)
         .map(l => {
@@ -348,9 +357,9 @@ export function useClosePosition() {
             return null;
           }
         })
-        .filter(Boolean) as Array<{ args: any }>;
+        .filter(Boolean) as CloseRequestedEvent[];
 
-      const closeEvt = closeLogs.find(e => (e as any).args?.positionKey === positionKey) ?? closeLogs[0];
+      const closeEvt = closeLogs.find(e => e.args?.positionKey === positionKey) ?? closeLogs[0];
       const finalAmountHandle = closeEvt?.args?.finalAmountHandle as `0x${string}` | undefined;
       const sizeHandle = closeEvt?.args?.sizeHandle as `0x${string}` | undefined;
 

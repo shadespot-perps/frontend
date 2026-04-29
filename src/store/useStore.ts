@@ -139,14 +139,8 @@ export const useStore = create<AppState>((set, get) => ({
     balanceFHE: 0,
     isOperator: false,
   },
-  connectWallet: () => set({
-    wallet: {
-      connected: true,
-      address: '0x7a3F...9e2B',
-      balanceFHE: 0,
-      isOperator: false,
-    }
-  }),
+  // Wallet connection is managed by wagmi; keep this as a no-op legacy shim.
+  connectWallet: () => set((s) => ({ wallet: { ...s.wallet, connected: true } })),
   disconnectWallet: () => set({
     wallet: { connected: false, address: null, balanceFHE: 0, isOperator: false }
   }),
@@ -156,17 +150,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   market: {
     pair: 'ETH-USD',
-    markPrice: 3847.52,
-    indexPrice: 3846.18,
-    change24h: 2.34,
-    high24h: 3912.00,
-    low24h: 3721.40,
-    volume24h: 284700000,
-    openInterest: 1240000000,
-    fundingRate: 0.0082,
-    nextFunding: '04:23:17',
-    vaultTVL: 847000000,
-    positionsCount: 12847,
+    // Start empty; UI should render placeholders until on-chain data is loaded.
+    markPrice: 0,
+    indexPrice: 0,
+    change24h: 0,
+    high24h: 0,
+    low24h: 0,
+    volume24h: 0,
+    openInterest: 0,
+    fundingRate: 0,
+    nextFunding: '',
+    vaultTVL: 0,
+    positionsCount: 0,
   },
   updatePrice: (price) => set((s) => ({
     market: { ...s.market, markPrice: price }
@@ -190,39 +185,9 @@ export const useStore = create<AppState>((set, get) => ({
     orders: s.orders.filter(o => o.id !== id)
   })),
 
-  history: [
-    {
-      id: 'hist-1', pool: 'fhe' as Pool, pair: 'ETH-USD', side: 'long', size: 3.0,
-      entryPrice: 3450.00, exitPrice: 3620.00, pnl: 510.00, pnlPercent: 4.93,
-      closedAt: '2024-03-08T18:30:00Z',
-    },
-    {
-      id: 'hist-2', pool: 'fhe' as Pool, pair: 'BTC-USD', side: 'short', size: 0.1,
-      entryPrice: 68500.00, exitPrice: 67200.00, pnl: 130.00, pnlPercent: 1.90,
-      closedAt: '2024-03-07T12:15:00Z',
-    },
-    {
-      id: 'hist-3', pool: 'fhe' as Pool, pair: 'ETH-USD', side: 'long', size: 2.0,
-      entryPrice: 3380.00, exitPrice: 3290.00, pnl: -180.00, pnlPercent: -2.66,
-      closedAt: '2024-03-06T20:45:00Z',
-    },
-    {
-      id: 'hist-4', pool: 'fhe' as Pool, pair: 'ETH-USD', side: 'short', size: 1.5,
-      entryPrice: 3580.00, exitPrice: 3510.00, pnl: 105.00, pnlPercent: 1.96,
-      closedAt: '2024-03-05T14:00:00Z',
-    },
-  ],
+  history: [],
 
-  permits: [
-    {
-      id: 'perm-1', recipient: '0x4b2E...8c1F', accessLevel: 'pnl',
-      expiresAt: '2024-04-10T00:00:00Z', createdAt: '2024-03-10T14:00:00Z', active: true,
-    },
-    {
-      id: 'perm-2', recipient: '0x9d7A...3e5C', accessLevel: 'full',
-      expiresAt: '2024-03-20T00:00:00Z', createdAt: '2024-03-05T09:00:00Z', active: true,
-    },
-  ],
+  permits: [],
   revokePermit: (id) => set((s) => ({
     permits: s.permits.map(p => p.id === id ? { ...p, active: false } : p)
   })),
@@ -234,13 +199,7 @@ export const useStore = create<AppState>((set, get) => ({
     }]
   })),
 
-  proposals: [
-    {
-      id: 'prop-1', title: 'Increase max leverage to 20x',
-      description: 'Proposal to raise the maximum leverage from 10x to 20x for Pool 1.',
-      status: 'active', votesFor: 1247000, votesAgainst: 834000, endsAt: '2024-03-20T00:00:00Z',
-    },
-  ],
+  proposals: [],
 
-  lpPosition: { deposited: 0, apy: 18.7 },
+  lpPosition: { deposited: 0, apy: 0 },
 }));

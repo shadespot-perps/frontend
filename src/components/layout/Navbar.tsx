@@ -9,8 +9,6 @@ const navItems = [
   { to: '/positions', label: 'Positions' },
   { to: '/earn', label: 'Earn' },
   { to: '/analytics', label: 'Analytics' },
-  { to: '/govern', label: 'Governance' },
-  { to: '/privacy', label: 'Privacy' },
 ];
 
 export function Navbar() {

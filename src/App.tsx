@@ -10,8 +10,6 @@ import PositionsPage from "./pages/PositionsPage";
 import HistoryPage from "./pages/HistoryPage";
 import EarnPage from "./pages/EarnPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
-import GovernPage from "./pages/GovernPage";
-import PrivacyPage from "./pages/PrivacyPage";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound.tsx";
 
@@ -33,8 +31,6 @@ function AppInner() {
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/earn" element={<EarnPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/govern" element={<GovernPage />} />
-            <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<NotFound />} />

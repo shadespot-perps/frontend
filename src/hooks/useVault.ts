@@ -116,6 +116,9 @@ export function useRemoveLiquidity() {
     setError(null);
     try {
       const shares = parseUnits(sharesStr, TOKEN_DECIMALS);
+      const fees = await publicClient!.estimateFeesPerGas();
+      const maxFeePerGas = fees.maxFeePerGas + (fees.maxFeePerGas / 5n); // +20% buffer to avoid baseFee bumps
+      const maxPriorityFeePerGas = fees.maxPriorityFeePerGas + (fees.maxPriorityFeePerGas / 5n);
 
       // Phase 1: submit withdraw check on-chain
       setStatus('submitting_check');
@@ -124,6 +127,8 @@ export function useRemoveLiquidity() {
         abi: FHE_ROUTER_ABI,
         functionName: 'submitWithdrawCheck',
         args: [shares],
+        maxFeePerGas,
+        maxPriorityFeePerGas,
       });
 
       setStatus('awaiting_decrypt');
@@ -178,6 +183,8 @@ export function useRemoveLiquidity() {
         abi: FHE_ROUTER_ABI,
         functionName: 'removeLiquidity',
         args: [shares, balPlain, balSig, liqPlain, liqSig],
+        maxFeePerGas,
+        maxPriorityFeePerGas,
       });
 
       setStatus('confirmed');

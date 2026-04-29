@@ -4,7 +4,6 @@ const links = [
   { label: 'Docs', href: '#' },
   { label: 'Github', href: '#' },
   { label: 'Audit', href: '#' },
-  { label: 'Privacy Policy', href: '#' },
   { label: 'Status', href: '#' },
 ];
 

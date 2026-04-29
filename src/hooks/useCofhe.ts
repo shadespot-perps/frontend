@@ -4,6 +4,7 @@ import type { EncryptedItemInput, Encryptable } from '@cofhe/sdk';
 import { useEffect, useRef, useState } from 'react';
 import { usePublicClient, useWalletClient } from 'wagmi';
 import { CHAIN_ID } from '@/lib/contracts';
+import type { PublicClient, WalletClient } from 'viem';
 
 // Module-level singletons — created once, shared across all hooks.
 const _config = createCofheConfig({ supportedChains: [chains.arbSepolia] });
@@ -11,8 +12,8 @@ export const cofheClient = createCofheClient(_config);
 
 let _cofheReady = false;
 export function isCofheReady() { return _cofheReady; }
-let _lastPublicClient: any | null = null;
-let _lastWalletClient: any | null = null;
+let _lastPublicClient: PublicClient | null = null;
+let _lastWalletClient: WalletClient | null = null;
 
 // Normalise a signature string to a viem-compatible 0x-prefixed hex.
 export function toHexSig(sig: string): `0x${string}` {
@@ -41,8 +42,11 @@ export async function encryptInputsOnChain(inputs: Encryptable[]) {
 }
 
 export async function getSelfPermitSafe() {
-  const hasSealingPair = (permit: any): boolean =>
-    !!permit?.sealingPair?.privateKey && !!permit?.sealingPair?.publicKey;
+  type PermitLike = { sealingPair?: { privateKey?: string; publicKey?: string }; type?: string };
+  const hasSealingPair = (permit: PermitLike | unknown): boolean => {
+    const p = permit as PermitLike | null | undefined;
+    return !!p?.sealingPair?.privateKey && !!p?.sealingPair?.publicKey;
+  };
   const clearCorruptedPermitState = async () => {
     try {
       const all = await cofheClient.permits.getPermits();
@@ -68,7 +72,8 @@ export async function getSelfPermitSafe() {
     // Recover from corrupted active pointer by selecting any valid stored self permit.
     const all = await cofheClient.permits.getPermits();
     for (const [hash, permit] of Object.entries(all ?? {})) {
-      if ((permit as any)?.type === 'self' && hasSealingPair(permit)) {
+      const p = permit as PermitLike;
+      if (p?.type === 'self' && hasSealingPair(p)) {
         cofheClient.permits.selectActivePermit(hash);
         return permit;
       }
@@ -86,7 +91,7 @@ export async function getSelfPermitSafe() {
   };
   try {
     return await tryGet();
-  } catch (err: any) {
+  } catch (err: unknown) {
     const msg = String(err?.message ?? err ?? '');
     const shouldReconnect = msg.includes('keyPair') || msg.includes('Cannot read properties of undefined');
     if (!shouldReconnect || !_lastPublicClient || !_lastWalletClient) throw err;
@@ -118,7 +123,7 @@ export async function decryptForTxWithRetry(
       const permit = await getSelfPermitSafe();
       const res = await cofheClient.decryptForTx(ctHash).withPermit(permit).execute();
       return { decryptedValue: res.decryptedValue as bigint, signature: res.signature as string };
-    } catch (err: any) {
+    } catch (err: unknown) {
       lastErr = err;
       const msg = String(err?.message ?? err ?? '');
       const keyPairOrPermitIssue =
@@ -134,7 +139,6 @@ export async function decryptForTxWithRetry(
       }
 
       if (attempt < retries) {
-        // eslint-disable-next-line no-console
         console.warn(`[CoFHE] ${label} attempt ${attempt}/${retries} failed, retrying...`, msg);
         await sleep(delayMs);
       }
@@ -161,7 +165,7 @@ export function useCofheClient() {
     _lastPublicClient = publicClient;
     _lastWalletClient = walletClient;
     cofheClient
-      .connect(publicClient as any, walletClient as any)
+      .connect(publicClient as unknown as PublicClient, walletClient as unknown as WalletClient)
       .then(() => { _cofheReady = true; setReady(true); })
       .catch((err: unknown) => console.error('[CoFHE] connect failed:', err))
       .finally(() => { connectingRef.current = false; });
