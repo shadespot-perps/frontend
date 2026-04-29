@@ -4,7 +4,6 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { OnboardingModal } from "@/components/shade/OnboardingModal";
 import { useCofheClient } from "@/hooks/useCofhe";
 import TradePage from "./pages/TradePage";
 import PositionsPage from "./pages/PositionsPage";
@@ -25,7 +24,6 @@ function AppInner() {
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <OnboardingModal />
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Navigate to="/trade" replace />} />

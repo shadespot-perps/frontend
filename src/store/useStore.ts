@@ -127,10 +127,6 @@ interface AppState {
   // Proposals
   proposals: Proposal[];
 
-  // Onboarding
-  showOnboarding: boolean;
-  dismissOnboarding: () => void;
-
   // Earn
   lpPosition: { deposited: number; apy: number };
 }
@@ -248,9 +244,6 @@ export const useStore = create<AppState>((set, get) => ({
       status: 'active', votesFor: 1247000, votesAgainst: 834000, endsAt: '2024-03-20T00:00:00Z',
     },
   ],
-
-  showOnboarding: true,
-  dismissOnboarding: () => set({ showOnboarding: false }),
 
   lpPosition: { deposited: 0, apy: 18.7 },
 }));

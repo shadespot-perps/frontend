@@ -1,5 +1,5 @@
 import { useStore } from '@/store/useStore';
-import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useState } from 'react';
 import { Shield, Layers, Eye } from 'lucide-react';
@@ -38,6 +38,10 @@ export function OnboardingModal() {
   return (
     <Dialog open={showOnboarding} onOpenChange={() => dismissOnboarding()}>
       <DialogContent className="bg-card border-border max-w-md p-0 overflow-hidden">
+        <DialogTitle className="sr-only">ShadeSpot Onboarding</DialogTitle>
+        <DialogDescription className="sr-only">
+          Introductory walkthrough for ShadeSpot privacy-preserving perpetual trading.
+        </DialogDescription>
         {/* Top accent */}
         <div className="h-1 gradient-teal" />
 

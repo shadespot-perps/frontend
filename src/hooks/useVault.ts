@@ -11,7 +11,7 @@ import {
   CONTRACTS, TOKEN_DECIMALS,
   FHE_ROUTER_ABI, FHE_TOKEN_ABI, VAULT_EVENTS_ABI,
 } from '@/lib/contracts';
-import { cofheClient, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
+import { decryptForTxWithRetry, encryptInputsOnChain, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
 
 // Manual gas override removed to let Viem natively negotiate Arbitrum L2 fees
 
@@ -72,9 +72,7 @@ export function useAddLiquidity() {
       }
 
       setStatus('encrypting');
-      const [encAmount] = await cofheClient
-        .encryptInputs([Encryptable.uint64(amountWei)])
-        .execute();
+      const [encAmount] = await encryptInputsOnChain([Encryptable.uint64(amountWei)]);
 
       setStatus('submitting');
       const fees = await publicClient!.estimateFeesPerGas();
@@ -153,10 +151,19 @@ export function useRemoveLiquidity() {
 
       // Off-chain decrypt both handles via CoFHE Threshold Network.
       // FHEVault calls FHE.allow(hasBal/hasLiq, lp) so the LP's self-permit is sufficient.
-      const permit = await cofheClient.permits.getOrCreateSelfPermit();
       const [balResult, liqResult] = await Promise.all([
-        cofheClient.decryptForTx(BigInt(logArgs.hasBalHandle)).withPermit(permit).execute(),
-        cofheClient.decryptForTx(BigInt(logArgs.hasLiqHandle)).withPermit(permit).execute(),
+        decryptForTxWithRetry(BigInt(logArgs.hasBalHandle), {
+          label: 'withdraw.hasBal',
+          retries: 15,
+          delayMs: 5000,
+          tryWithoutPermitFallback: true,
+        }),
+        decryptForTxWithRetry(BigInt(logArgs.hasLiqHandle), {
+          label: 'withdraw.hasLiq',
+          retries: 15,
+          delayMs: 5000,
+          tryWithoutPermitFallback: true,
+        }),
       ]);
 
       const balPlain = balResult.decryptedValue !== 0n;

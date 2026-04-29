@@ -13,14 +13,15 @@ export const INDEX_TOKEN = '0x980B62Da83eFf3D4576C647993b0c1D7faf17c73' as const
 export const TOKEN_DECIMALS = 6;
 
 export const CONTRACTS = {
-  router:             '0xbF0561BfD203c061806523B009127aa79B4a3185',
-  fheToken:           '0xe952e43CFCA6e3dd12c1F22EB4C269Bd513f15F6',
-  priceOracle:        '0xeE3452EeBE1E18297EACEcDA6FD2203944198a11',
-  fundingRateManager: '0xF7DC4ef11C0AC6a1Ad03D40Fb5667C9536e3d8D5',
-  vault:              '0xdD6ffF3B71f7C9Af341c577ceFFE2de892C98fA0',
-  positionManager:    '0x3b9F80f3D1B5a635d22528ed7F4868edf4512951',
-  orderManager:       '0x0109C383275D0261773e2E3779465320344639b1',
-  liquidationManager: '0xfF88616f203268Ca2BeDE8C5303DbddcEcD4Da62',
+  // Fresh deployment (Apr 28, 2026)
+  router:             '0x3F476E2D46eA857aD82DA28c41a15d336F3bA83D',
+  fheToken:           '0xe3843689B78709463a77Faa30d7A2Df72f56163b',
+  priceOracle:        '0x372cCb135c97e106eD44701e6170Ac4C06Dc3F72',
+  fundingRateManager: '0x53903cBAAdd1F5B6bAEa95F654B7A9De17F69D75',
+  vault:              '0xF522f386046644b359472E05340BB692751C5A37',
+  positionManager:    '0xD61852B3E1f0E8c49A8EB5dCD039926744b853f0',
+  orderManager:       '0xDEBA979720dF2454a1e34f9304F66dD0003BBf78',
+  liquidationManager: '0x09AB5a52d7f4f1c58D966634F2aBdAEa6cA0265f',
 } as const;
 
 // ─────────────────────────────────────────────────────────────
@@ -45,19 +46,10 @@ const IN_EBOOL    = { type: 'tuple', components: IN_ENC_COMPONENTS } as const;
 // ─────────────────────────────────────────────────────────────
 
 export const FHE_ROUTER_ABI = [
-  // ── Read ────────────────────────────────────────────────────
-  {
-    name: 'actionFee',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-
   // ── Market open (two-phase) ──────────────────────────────────
   // Phase 1: encrypt collateral/leverage/isLong, submit FHE liq-check
   {
-    name: 'submitDecryptTaskForOpen',
+    name: 'submitOpenPositionCheck',
     type: 'function',
     stateMutability: 'nonpayable',
     inputs: [
@@ -70,9 +62,9 @@ export const FHE_ROUTER_ABI = [
   },
   // Phase 2: re-submit same ciphertexts + CoFHE TN proof from decryptForTx
   {
-    name: 'openPosition',
+    name: 'finalizeOpenPosition',
     type: 'function',
-    stateMutability: 'payable',
+    stateMutability: 'nonpayable',
     inputs: [
       { name: 'token',         type: 'address'   },
       { name: 'encCollateral', ...IN_EUINT64      },
@@ -87,18 +79,18 @@ export const FHE_ROUTER_ABI = [
   // ── Close position ────────────────────────────────────────────
   // positionId = PositionManager.getPositionKey(trader, indexToken, isLong)
   {
-    name: 'closePosition',
+    name: 'requestClosePosition',
     type: 'function',
-    stateMutability: 'payable',
+    stateMutability: 'nonpayable',
     inputs: [{ name: 'positionId', type: 'bytes32' }],
     outputs: [],
   },
 
   // ── Limit / trigger order ─────────────────────────────────────
   {
-    name: 'createOrder',
+    name: 'createEncryptedOrder',
     type: 'function',
-    stateMutability: 'payable',
+    stateMutability: 'nonpayable',
     inputs: [
       { name: 'token',            type: 'address'    },
       { name: 'encCollateral',    ...IN_EUINT64       },
@@ -109,7 +101,7 @@ export const FHE_ROUTER_ABI = [
     outputs: [],
   },
   {
-    name: 'cancelOrder',
+    name: 'cancelEncryptedOrder',
     type: 'function',
     stateMutability: 'nonpayable',
     inputs: [{ name: 'orderId', type: 'uint256' }],
@@ -259,95 +251,59 @@ export const FUNDING_RATE_MANAGER_ABI = [
 
 export const POSITION_MANAGER_ABI = [
   {
-    name: 'positions',
+    name: 'getMyPositionKey',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'isLong', type: 'bool' },
+    ],
+    outputs: [{ name: '', type: 'bytes32' }],
+  },
+  {
+    name: 'positionExists',
     type: 'function',
     stateMutability: 'view',
     inputs: [{ name: 'key', type: 'bytes32' }],
-    outputs: [
-      { name: 'owner',             type: 'address' },
-      { name: 'indexToken',        type: 'address' },
-      { name: 'size',              type: 'bytes32' },
-      { name: 'collateral',        type: 'bytes32' },
-      { name: 'entryPrice',        type: 'bytes32' },
-      { name: 'entryFundingRate',  type: 'int256'  },
-      { name: 'isLong',            type: 'bytes32' },
-      { name: 'exists',            type: 'bool'    },
-    ],
+    outputs: [{ name: '', type: 'bool' }],
   },
+  // Finalize close after decrypt proofs are obtained off-chain.
   {
     name: 'finalizeClosePosition',
     type: 'function',
     stateMutability: 'nonpayable',
     inputs: [
-      { name: 'trader',               type: 'address' },
-      { name: 'token',                type: 'address' },
-      { name: 'isLong',               type: 'bool'    },
-      { name: 'finalAmount',          type: 'uint256' },
-      { name: 'finalAmountSignature', type: 'bytes'   },
-      { name: 'sizePlain',            type: 'uint256' },
-      { name: 'sizeSignature',        type: 'bytes'   },
+      { name: 'positionKey', type: 'bytes32' },
+      { name: 'finalAmount', type: 'uint256' },
+      { name: 'finalAmountSignature', type: 'bytes' },
+      { name: 'sizePlain', type: 'uint256' },
+      { name: 'sizeSignature', type: 'bytes' },
+      { name: 'collateralPlain', type: 'uint256' },
+      { name: 'collateralSignature', type: 'bytes' },
+      { name: 'isLongPlain', type: 'bool' },
     ],
     outputs: [],
   },
-  {
-    name: 'getPositionKey',
-    type: 'function',
-    stateMutability: 'pure',
-    inputs: [
-      { name: 'trader', type: 'address' },
-      { name: 'token',  type: 'address' },
-      { name: 'isLong', type: 'bool'    },
-    ],
-    outputs: [{ name: '', type: 'bytes32' }],
-  },
+  // Events needed to retrieve handles for close finalization.
   {
     name: 'CloseRequested',
     type: 'event',
     inputs: [
-      { name: 'positionKey',       type: 'bytes32', indexed: true  },
-      { name: 'trader',            type: 'address', indexed: true  },
-      { name: 'token',             type: 'address', indexed: true  },
-      { name: 'isLong',            type: 'bool',    indexed: false },
+      { name: 'positionKey', type: 'bytes32', indexed: true },
+      { name: 'trader', type: 'address', indexed: true },
       { name: 'finalAmountHandle', type: 'bytes32', indexed: false },
-    ],
-  },
-  {
-    name: 'CloseFinalized',
-    type: 'event',
-    inputs: [
-      { name: 'positionKey', type: 'bytes32', indexed: true  },
-      { name: 'trader',      type: 'address', indexed: true  },
-      { name: 'token',       type: 'address', indexed: true  },
-      { name: 'isLong',      type: 'bool',    indexed: false },
-      { name: 'finalAmount', type: 'uint256', indexed: false },
-      { name: 'size',        type: 'uint256', indexed: false },
+      { name: 'sizeHandle', type: 'bytes32', indexed: false },
     ],
   },
   {
     name: 'PositionOpened',
     type: 'event',
     inputs: [
-      { name: 'positionKey',      type: 'bytes32', indexed: true  },
-      { name: 'trader',           type: 'address', indexed: true  },
-      { name: 'sizeHandle',       type: 'bytes32', indexed: false },
+      { name: 'positionKey', type: 'bytes32', indexed: true },
+      { name: 'trader', type: 'address', indexed: true },
+      { name: 'sizeHandle', type: 'bytes32', indexed: false },
       { name: 'collateralHandle', type: 'bytes32', indexed: false },
-      { name: 'isLongHandle',     type: 'bytes32', indexed: false },
-    ],
-  },
-  {
-    name: 'PositionClosed',
-    type: 'event',
-    inputs: [
-      { name: 'trader', type: 'address', indexed: false },
-      { name: 'token',  type: 'address', indexed: false },
-    ],
-  },
-  {
-    name: 'PositionLiquidated',
-    type: 'event',
-    inputs: [
-      { name: 'trader', type: 'address', indexed: false },
-      { name: 'token',  type: 'address', indexed: false },
+      { name: 'isLongHandle', type: 'bytes32', indexed: false },
     ],
   },
 ] as const;
