@@ -109,7 +109,8 @@ interface AppState {
   // Positions
   positions: Position[];
   setPositions: (positions: Position[]) => void;
-  decryptPosition: (id: string) => void;
+  updatePosition: (id: string, patch: Partial<Position>) => void;
+  setPositionStatus: (id: string, status: PositionStatus) => void;
 
   // Orders
   orders: Order[];
@@ -176,16 +177,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   positions: [],
   setPositions: (positions) => set({ positions }),
-  decryptPosition: (id) => {
-    set((s) => ({
-      positions: s.positions.map(p => p.id === id ? { ...p, status: 'decrypting' as PositionStatus } : p)
-    }));
-    setTimeout(() => {
-      set((s) => ({
-        positions: s.positions.map(p => p.id === id ? { ...p, status: 'decrypted' as PositionStatus } : p)
-      }));
-    }, 1500);
-  },
+  updatePosition: (id, patch) => set((s) => ({
+    positions: s.positions.map(p => p.id === id ? { ...p, ...patch } : p)
+  })),
+  setPositionStatus: (id, status) => set((s) => ({
+    positions: s.positions.map(p => p.id === id ? { ...p, status } : p)
+  })),
 
   orders: [],
   setOrders: (orders) => set({ orders }),

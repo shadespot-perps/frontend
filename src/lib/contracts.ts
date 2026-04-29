@@ -267,6 +267,24 @@ export const POSITION_MANAGER_ABI = [
     inputs: [{ name: 'key', type: 'bytes32' }],
     outputs: [{ name: '', type: 'bool' }],
   },
+  {
+    name: 'getMyPosition',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'key', type: 'bytes32' }],
+    outputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'indexToken', type: 'address' },
+      { name: 'size', type: 'bytes32' },
+      { name: 'collateral', type: 'bytes32' },
+      { name: 'entryPrice', type: 'bytes32' },
+      { name: 'entryFundingRateBiased', type: 'bytes32' },
+      { name: 'eLeverage', type: 'bytes32' },
+      { name: 'isLong', type: 'bytes32' },
+      { name: 'exists', type: 'bool' },
+      { name: 'leverage', type: 'uint256' },
+    ],
+  },
   // Finalize close after decrypt proofs are obtained off-chain.
   {
     name: 'finalizeClosePosition',

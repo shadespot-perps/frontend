@@ -5,6 +5,7 @@ import { useMarketData } from '@/hooks/useMarket';
 import { useOpenPosition, useCancelOrder, useClosePosition, useTradePrecheck } from '@/hooks/useTrade';
 import { usePositions } from '@/hooks/usePositions';
 import { useOrders } from '@/hooks/useOrders';
+import { useDecryptPosition } from '@/hooks/useDecryptPosition';
 import { PriceDisplay } from '@/components/shade/PriceDisplay';
 import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
 import { EncryptedField } from '@/components/shade/EncryptedField';
@@ -358,8 +359,12 @@ function OrderPanel() {
 
 // --- Position Panel ---
 function PositionPanel() {
-  const { positions, decryptPosition } = useStore();
+  const { positions } = useStore();
+  const decryptPosition = useDecryptPosition();
   const { execute: closePosition, status: closeStatus } = useClosePosition();
+  // `useClosePosition()` has a single shared `closeStatus` for the whole panel.
+  // Track which specific positionKey we clicked so only that row shows "Closing…".
+  const [closingPositionKey, setClosingPositionKey] = useState<string | null>(null);
 
   if (positions.length === 0) {
     return (
@@ -382,9 +387,15 @@ function PositionPanel() {
               <span className="font-semibold text-sm">{pos.pair}</span>
               <span className={cn(
                 'text-xs font-semibold px-1.5 py-0.5 rounded',
-                pos.side === 'long' ? 'bg-shade-green/15 text-shade-green' : 'bg-shade-red/15 text-shade-red'
+                    pos.status === 'decrypted'
+                      ? (pos.side === 'long' ? 'bg-shade-green/15 text-shade-green' : 'bg-shade-red/15 text-shade-red')
+                      : 'bg-secondary text-muted-foreground'
               )}>
-                {pos.side.toUpperCase()} {pos.leverage}x
+                    {pos.status === 'decrypted'
+                      ? `${pos.side.toUpperCase()} ${pos.leverage}x`
+                      : pos.status === 'decrypting'
+                        ? 'DECRYPTING'
+                        : 'ENCRYPTED'}
               </span>
               <PoolBadge pool={pos.pool} />
             </div>
@@ -411,16 +422,26 @@ function PositionPanel() {
               <span className="text-muted-foreground">PnL</span>
               <div className="mt-0.5">
                 <EncryptedField
-                  value={`${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent.toFixed(2)}%)`}
+                  value={
+                    pos.status === 'decrypted'
+                      ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)} (${pos.pnlPercent >= 0 ? '+' : ''}${pos.pnlPercent.toFixed(2)}%)`
+                      : '****'
+                  }
                   status={pos.status}
-                  className={pos.pnl >= 0 ? 'text-shade-green' : 'text-shade-red'}
+                  className={
+                    pos.status === 'decrypted' ? (pos.pnl >= 0 ? 'text-shade-green' : 'text-shade-red') : undefined
+                  }
                 />
               </div>
             </div>
             <div>
               <span className="text-muted-foreground">Entry Price</span>
               <div className="mt-0.5">
-                <EncryptedField value="encrypted" status={pos.status} className="text-foreground" />
+                <EncryptedField
+                  value={pos.status === 'decrypted' ? `$${pos.entryPrice.toLocaleString()}` : '****'}
+                  status={pos.status}
+                  className="text-foreground"
+                />
               </div>
             </div>
           </div>
@@ -431,13 +452,17 @@ function PositionPanel() {
               variant="outline"
               size="sm"
               className="text-xs flex-1"
-              disabled={closeStatus === 'submitting'}
-              onClick={() => closePosition(pos.positionKey)}
+              disabled={closeStatus === 'submitting' && closingPositionKey !== null}
+              onClick={async () => {
+                setClosingPositionKey(pos.positionKey);
+                try {
+                  await closePosition(pos.positionKey);
+                } finally {
+                  setClosingPositionKey(null);
+                }
+              }}
             >
-              {closeStatus === 'submitting' ? 'Closing…' : 'Close Position'}
-            </Button>
-            <Button variant="outline" size="sm" className="text-xs border-shade-teal/30 text-shade-teal">
-              Share Permit
+              {closeStatus === 'submitting' && closingPositionKey === pos.positionKey ? 'Closing…' : 'Close Position'}
             </Button>
           </div>
         </div>

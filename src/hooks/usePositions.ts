@@ -72,24 +72,28 @@ export function usePositions() {
         const positions: Position[] = uniqueKeys
           .filter((_, i) => existsFlags[i])
           .map((key, i) => {
-            // We can't know side from plaintext; keep it "encrypted" in UI.
-            // (We *could* decrypt isLongHandle later, but current UX assumes encrypted.)
+            const existing = useStore.getState().positions.find(p => p.positionKey === key);
+
+            // We can't know side from plaintext from events; keep it "encrypted" unless we already decrypted.
+            // (We decrypt isLong/entryPrice/etc on-demand and then preserve those fields on refresh.)
+            const isPreserved = existing && (existing.status === 'decrypted' || existing.status === 'decrypting');
             return {
-              id:               `${address}-${i}-${key}`,
+              // Stable id per on-chain positionKey to avoid wiping decrypted state when ordering changes.
+              id:               `${key}`,
               pool:             'fhe',
               pair:             PAIR,
-              side:             'long', // placeholder; UI treats everything as encrypted anyway
+              side:             isPreserved ? existing.side : 'long', // placeholder
               positionKey:      key,
-              size:             0,
-              collateral:       0,
-              leverage:         0,
-              entryPrice:       0,
-              markPrice:        0,
-              pnl:              0,
-              pnlPercent:       0,
-              liquidationPrice: 0,
-              status:           'encrypted',
-              openedAt:         new Date().toISOString(),
+              size:             isPreserved ? existing.size : 0,
+              collateral:       isPreserved ? existing.collateral : 0,
+              leverage:         isPreserved ? existing.leverage : 0,
+              entryPrice:       isPreserved ? existing.entryPrice : 0,
+              markPrice:        isPreserved ? existing.markPrice : 0,
+              pnl:              isPreserved ? existing.pnl : 0,
+              pnlPercent:       isPreserved ? existing.pnlPercent : 0,
+              liquidationPrice: isPreserved ? existing.liquidationPrice : 0,
+              status:           isPreserved ? existing.status : 'encrypted',
+              openedAt:         isPreserved ? existing.openedAt : new Date().toISOString(),
             };
           });
 

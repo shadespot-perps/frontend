@@ -27,7 +27,7 @@ export function DecryptButton({ status, onDecrypt, className, size = 'sm' }: Dec
       {status === 'decrypting' ? (
         <>
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          <span className="ml-1.5 font-mono text-xs">2/3 sigs...</span>
+          <span className="ml-1.5 font-mono text-xs">Decrypting…</span>
         </>
       ) : (
         <>
