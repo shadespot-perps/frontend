@@ -53,45 +53,134 @@ function TradingChart() {
     });
 
     let priceLineRef: ReturnType<typeof candleSeries.createPriceLine> | null = null;
+    let stopped = false;
 
-    // Fetch OHLC from CoinGecko public API (ETH/USD, 7 days, hourly)
-    fetch('https://api.coingecko.com/api/v3/coins/ethereum/ohlc?vs_currency=usd&days=7')
-      .then(r => r.json())
-      .then((data: [number, number, number, number, number][]) => {
-        const candles = data.map(([ts, o, h, l, c]) => ({
-          time: Math.floor(ts / 1000) as UTCTimestamp,
-          open: o, high: h, low: l, close: c,
-        }));
+    // IMPORTANT: CoinGecko blocks browser CORS. Use the dev-server proxy path.
+    // In production, you should proxy similarly via your backend/reverse-proxy.
+    // Use 1D OHLC (higher resolution) so candles look correct,
+    // then "live update" the current 5-minute candle from spot polling.
+    // Cached dev endpoints (see vite.config.ts). UI can poll these every 5s safely.
+    const COINGECKO_OHLC_1D = '/cg/ohlc';
+    const COINGECKO_PRICE = '/cg/price';
 
-        if (candles.length === 0) return;
-        candleSeries.setData(candles);
-
-        const latest = candles[candles.length - 1];
-        const prev24h = candles[Math.max(0, candles.length - 24)];
-        const change24h = ((latest.close - prev24h.open) / prev24h.open) * 100;
-        const high24h = Math.max(...candles.slice(-24).map(c => c.high));
-        const low24h = Math.min(...candles.slice(-24).map(c => c.low));
-
-        updateMarket({
-          markPrice: latest.close,
-          indexPrice: latest.close,
-          change24h: parseFloat(change24h.toFixed(2)),
-          high24h,
-          low24h,
-        });
-
+    const setOrUpdatePriceLine = (price: number) => {
+      if (!Number.isFinite(price) || price <= 0) return;
+      if (!priceLineRef) {
         priceLineRef = candleSeries.createPriceLine({
-          price: latest.close,
+          price,
           color: 'hsl(160, 90%, 43%)',
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
           title: 'Mark',
         });
+        return;
+      }
+      // lightweight-charts price line doesn't expose a stable "setPrice" in our typed import;
+      // recreate to reflect live price updates.
+      candleSeries.removePriceLine(priceLineRef);
+      priceLineRef = null;
+      setOrUpdatePriceLine(price);
+    };
 
+    const candlesRef: { current: { time: UTCTimestamp; open: number; high: number; low: number; close: number }[] } = { current: [] };
+    const refreshOhlcHistory = async () => {
+      try {
+        const r = await fetch(COINGECKO_OHLC_1D, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`CoinGecko OHLC HTTP ${r.status}`);
+        const data = (await r.json()) as [number, number, number, number, number][];
+        const candles = data.map(([ts, o, h, l, c]) => ({
+          time: Math.floor(ts / 1000) as UTCTimestamp,
+          open: o, high: h, low: l, close: c,
+        }));
+        if (stopped || candles.length === 0) return;
+        candleSeries.setData(candles);
+        candlesRef.current = candles;
         chart.timeScale().fitContent();
-      })
-      .catch(console.error);
+
+        // Drive mark/index from the latest candle close (purely from OHLC feed).
+        const latest = candles[candles.length - 1];
+        setOrUpdatePriceLine(latest.close);
+        updateMarket({ markPrice: latest.close, indexPrice: latest.close });
+      } catch (e) {
+        // best effort: keep last known data
+        console.error(e);
+      }
+    };
+
+    const applySpotToCurrentCandle = (spot: number) => {
+      if (!Number.isFinite(spot) || spot <= 0) return;
+      const existing = candlesRef.current;
+      if (existing.length === 0) return;
+
+      // CoinGecko 1D OHLC comes in 5-minute buckets.
+      const now = Math.floor(Date.now() / 1000);
+      const bucket = Math.floor(now / 300) * 300;
+      const bucketTs = bucket as UTCTimestamp;
+
+      const last = existing[existing.length - 1];
+      const lastTs = Number(last.time);
+
+      if (lastTs === Number(bucketTs)) {
+        const updated = {
+          ...last,
+          close: spot,
+          high: Math.max(last.high, spot),
+          low: Math.min(last.low, spot),
+        };
+        const next = [...existing.slice(0, -1), updated];
+        candlesRef.current = next;
+        candleSeries.setData(next);
+        return;
+      }
+
+      // If we're past the last OHLC bucket, append a new candle seeded from last close.
+      if (lastTs < Number(bucketTs)) {
+        const nextCandle = { time: bucketTs, open: last.close, high: spot, low: spot, close: spot };
+        const next = [...existing, nextCandle].slice(-400);
+        candlesRef.current = next;
+        candleSeries.setData(next);
+      }
+    };
+
+    // (No standalone pollLivePrice function) — keep a single polling loop to avoid duplicate requests.
+
+    // Fetch OHLC from CoinGecko public API (ETH/USD, 7 days, hourly).
+    // Candles are always sourced from the OHLC feed (no synthetic candle generation).
+    refreshOhlcHistory().then(() => scheduleLivePoll(0));
+
+    // Live price line / ticker: update frequently (adaptive backoff on 429).
+    let liveTimeout: number | null = null;
+    const scheduleLivePoll = (ms: number) => {
+      if (liveTimeout != null) window.clearTimeout(liveTimeout);
+      liveTimeout = window.setTimeout(async () => {
+        try {
+          const r = await fetch(COINGECKO_PRICE, { cache: 'no-store' });
+          if (r.status === 429) {
+            console.warn('[CoinGecko] 429 rate limited; backing off 60s');
+            scheduleLivePoll(60_000);
+            return;
+          }
+          if (!r.ok) throw new Error(`CoinGecko price HTTP ${r.status}`);
+          const json = (await r.json()) as { ethereum?: { usd?: number; usd_24h_change?: number } };
+          const usd = json.ethereum?.usd;
+          if (stopped || usd == null) { scheduleLivePoll(5_000); return; }
+          setOrUpdatePriceLine(usd);
+          updateMarket({
+            markPrice: usd,
+            indexPrice: usd,
+            change24h: json.ethereum?.usd_24h_change != null ? Number(json.ethereum.usd_24h_change.toFixed(2)) : undefined,
+          });
+          scheduleLivePoll(5_000);
+        } catch (err) {
+          console.error(err);
+          scheduleLivePoll(15_000);
+        }
+      }, ms);
+    };
+    scheduleLivePoll(5_000);
+    // Real candles: poll OHLC regularly so candles move dynamically.
+    const ohlcInterval = window.setInterval(refreshOhlcHistory, 60_000);
 
     const handleResize = () => {
       if (chartRef.current) chart.applyOptions({ width: chartRef.current.clientWidth });
@@ -99,6 +188,9 @@ function TradingChart() {
     window.addEventListener('resize', handleResize);
 
     return () => {
+      stopped = true;
+      if (liveTimeout != null) window.clearTimeout(liveTimeout);
+      window.clearInterval(ohlcInterval);
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
@@ -522,7 +614,8 @@ function OrdersTab() {
 export default function TradePage() {
   const { market } = useStore();
   useWalletSync();
-  useMarketData(); // polls PriceOracle + FundingRateManager on-chain
+  // Use on-chain reads for funding/OI, but keep mark price driven by CoinGecko chart polling.
+  useMarketData({ includePrice: false });
   usePositions();  // reads PositionOpened events + checks exists on-chain
   useOrders();     // reads OrderCreated events + checks isActive on-chain
 

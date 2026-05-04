@@ -6,15 +6,16 @@ import {
 import { useStore } from '@/store/useStore';
 import { useEffect } from 'react';
 
-export function useMarketData() {
+export function useMarketData(options?: { includePrice?: boolean }) {
   const updateMarket = useStore((s) => s.updateMarket);
+  const includePrice = options?.includePrice ?? true;
 
   const { data: priceRaw } = useReadContract({
     address: CONTRACTS.priceOracle,
     abi: PRICE_ORACLE_ABI,
     functionName: 'getPrice',
     args: [INDEX_TOKEN],
-    query: { refetchInterval: 5_000 },
+    query: { enabled: includePrice, refetchInterval: 5_000 },
   });
 
   const { data: fundingRaw } = useReadContract({
@@ -36,7 +37,7 @@ export function useMarketData() {
   useEffect(() => {
     const patch: Parameters<typeof updateMarket>[0] = {};
 
-    if (priceRaw !== undefined) {
+    if (includePrice && priceRaw !== undefined) {
       const price = Number(priceRaw) / 1e8;
       patch.markPrice = price;
       patch.indexPrice = price;
@@ -52,5 +53,5 @@ export function useMarketData() {
     }
 
     if (Object.keys(patch).length > 0) updateMarket(patch);
-  }, [priceRaw, fundingRaw, oiRaw, updateMarket]);
+  }, [includePrice, priceRaw, fundingRaw, oiRaw, updateMarket]);
 }

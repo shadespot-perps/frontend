@@ -1,6 +1,7 @@
 import { useAccount } from 'wagmi';
 import { Button } from '@/components/ui/button';
 import { EncryptedField } from '@/components/shade/EncryptedField';
+import { DecryptButton } from '@/components/shade/DecryptButton';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
 import { TrendingUp, AlertTriangle, Loader2, CheckCircle2, XCircle } from 'lucide-react';
@@ -11,6 +12,7 @@ import {
   useRemoveLiquidity,
   type VaultTxStatus,
 } from '@/hooks/useVault';
+import { useDecryptLpPosition } from '@/hooks/useDecryptLpPosition';
 
 function VaultUtilMeter({ value }: { value: number }) {
   return (
@@ -73,6 +75,7 @@ export default function EarnPage() {
   // FHE vault and token balances are always encrypted
   const { tvl, utilization, isEncrypted: statsEncrypted } = useVaultStats();
   const { balance: tokenBalance, isEncrypted: balanceEncrypted } = useTokenBalance();
+  const lp = useDecryptLpPosition();
 
   const deposit  = useAddLiquidity();
   const { isOperatorSet } = deposit;
@@ -176,19 +179,44 @@ export default function EarnPage() {
 
           {/* My LP Position */}
           <div className="shade-card p-5 space-y-3">
-            <h2 className="text-sm font-semibold text-foreground">My LP Position</h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-foreground">My LP Position</h2>
+              <DecryptButton
+                status={lp.status}
+                onDecrypt={() => lp.decrypt()}
+                className={!lp.canDecrypt ? 'opacity-50 pointer-events-none' : undefined}
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <span className="text-xs text-muted-foreground">Deposited</span>
+                <span className="text-xs text-muted-foreground">LP Shares</span>
                 <div className="mt-1">
-                  <EncryptedField value="Encrypted" status="encrypted" />
+                  {lp.status === 'decrypted' && lp.sharesLabel ? (
+                    <p className="font-mono text-foreground mt-1">{lp.sharesLabel}</p>
+                  ) : (
+                    <EncryptedField value={lp.status === 'decrypting' ? 'Decrypting…' : 'Encrypted'} status={lp.status} />
+                  )}
                 </div>
               </div>
               <div>
-                <span className="text-xs text-muted-foreground">Current APY</span>
-                <p className="font-mono text-muted-foreground mt-1">—</p>
+                <span className="text-xs text-muted-foreground">Pool Share</span>
+                <div className="mt-1">
+                  {lp.status === 'decrypted' && lp.poolShareLabel ? (
+                    <p className="font-mono text-foreground">{lp.poolShareLabel}</p>
+                  ) : (
+                    <p className="font-mono text-muted-foreground">—</p>
+                  )}
+                </div>
               </div>
             </div>
+
+            {lp.pendingWithdrawLabel && (
+              <div className="pt-2 border-t border-border/40">
+                <p className="text-xs text-muted-foreground">
+                  Pending withdraw shares: <span className="font-mono text-foreground">{lp.pendingWithdrawLabel}</span>
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Revenue chart */}

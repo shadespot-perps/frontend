@@ -51,6 +51,81 @@ export default defineConfig(({ mode }) => ({
         });
       },
     },
+    {
+      name: "shadespot-coingecko-cache",
+      // CoinGecko is CORS-blocked + rate-limited. Provide a same-origin cached endpoint
+      // for dev so the UI can poll every 5s without spamming CoinGecko.
+      configureServer(server) {
+        type CacheEntry = { ts: number; status: number; body: string; contentType: string };
+        const cache = new Map<string, CacheEntry>();
+
+        const TTL_MS = {
+          price: 10_000, // upstream hit at most once per 10s
+          ohlc: 60_000,  // upstream hit at most once per 60s
+        };
+
+        server.middlewares.use(async (req, res, next) => {
+          const url = req.url ?? "";
+          if (!url.startsWith("/cg/")) return next();
+
+          const now = Date.now();
+          const isPrice = url.startsWith("/cg/price");
+          const isOhlc = url.startsWith("/cg/ohlc");
+          if (!isPrice && !isOhlc) return next();
+
+          const key = url;
+          const ttl = isPrice ? TTL_MS.price : TTL_MS.ohlc;
+          const cached = cache.get(key);
+          if (cached && now - cached.ts < ttl) {
+            res.statusCode = cached.status;
+            res.setHeader("Content-Type", cached.contentType);
+            res.setHeader("X-CG-Cache", "HIT");
+            res.end(cached.body);
+            return;
+          }
+
+          const upstreamUrl = isPrice
+            ? "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true"
+            : "https://api.coingecko.com/api/v3/coins/ethereum/ohlc?vs_currency=usd&days=1";
+
+          try {
+            const upstreamRes = await fetch(upstreamUrl, {
+              headers: { accept: "application/json" },
+            });
+            const text = await upstreamRes.text();
+            const contentType = upstreamRes.headers.get("content-type") ?? "application/json; charset=utf-8";
+
+            // If we get rate-limited, serve stale data if available.
+            if (upstreamRes.status === 429 && cached) {
+              res.statusCode = 200;
+              res.setHeader("Content-Type", cached.contentType);
+              res.setHeader("X-CG-Cache", "STALE");
+              res.end(cached.body);
+              return;
+            }
+
+            cache.set(key, { ts: now, status: upstreamRes.status, body: text, contentType });
+
+            res.statusCode = upstreamRes.status;
+            res.setHeader("Content-Type", contentType);
+            res.setHeader("X-CG-Cache", "MISS");
+            res.end(text);
+          } catch (e) {
+            // Network failure: serve stale if possible.
+            if (cached) {
+              res.statusCode = 200;
+              res.setHeader("Content-Type", cached.contentType);
+              res.setHeader("X-CG-Cache", "STALE");
+              res.end(cached.body);
+              return;
+            }
+            res.statusCode = 502;
+            res.setHeader("Content-Type", "application/json; charset=utf-8");
+            res.end(JSON.stringify({ error: "CoinGecko upstream fetch failed" }));
+          }
+        });
+      },
+    },
     react(),
     mode === "development" && componentTagger(),
   ].filter(Boolean),
@@ -73,6 +148,15 @@ export default defineConfig(({ mode }) => ({
     headers: {
       'Cross-Origin-Opener-Policy':   'same-origin',
       'Cross-Origin-Embedder-Policy': 'credentialless',
+    },
+    proxy: {
+      // CoinGecko blocks browser CORS. Proxy through the dev server so the frontend can
+      // poll `/coingecko/api/v3/...` without CORS errors.
+      '/coingecko': {
+        target: 'https://api.coingecko.com',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/coingecko/, ''),
+      },
     },
   },
   resolve: {

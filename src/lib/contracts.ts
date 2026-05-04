@@ -212,6 +212,40 @@ export const VAULT_EVENTS_ABI = [
 ] as const;
 
 // ─────────────────────────────────────────────────────────────
+// FHEVault ABI (view methods used by the frontend)
+// NOTE: most vault state is encrypted; getters return ciphertext handles (bytes32).
+// ─────────────────────────────────────────────────────────────
+
+export const FHE_VAULT_ABI = [
+  {
+    name: 'lpBalance',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [{ name: '', type: 'bytes32' }],
+  },
+  {
+    name: 'encryptedTotalSupply',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'bytes32' }],
+  },
+  {
+    name: 'pendingWithdraw',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [
+      { name: 'hasBal', type: 'bytes32' },
+      { name: 'hasLiq', type: 'bytes32' },
+      { name: 'eAmount', type: 'bytes32' },
+      { name: 'shares', type: 'uint256' },
+    ],
+  },
+] as const;
+
+// ─────────────────────────────────────────────────────────────
 // Other ABIs (unchanged)
 // ─────────────────────────────────────────────────────────────
 

@@ -121,17 +121,33 @@ export async function decryptForTxWithRetry(
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const permit = await getSelfPermitSafe();
-      const res = await cofheClient.decryptForTx(ctHash).withPermit(permit).execute();
+      const res = await cofheClient
+        .decryptForTx(ctHash)
+        .setChainId(CHAIN_ID)
+        .withPermit(permit)
+        .execute();
       return { decryptedValue: res.decryptedValue as bigint, signature: res.signature as string };
     } catch (err: unknown) {
       lastErr = err;
       const msg = String(err?.message ?? err ?? '');
+      const isForbidden = msg.includes('HTTP 403') || msg.includes('403 (Forbidden)') || msg.includes('403 Forbidden');
+      if (isForbidden) {
+        throw new Error(
+          `${label} failed: CoFHE Threshold Network returned HTTP 403. ` +
+          `This usually means chainId/permit mismatch or the TN endpoint is refusing the request. ` +
+          `Make sure the connected wallet is on chainId=${CHAIN_ID} and try again.`
+        );
+      }
       const keyPairOrPermitIssue =
         msg.includes('keyPair') || msg.includes('Cannot read properties of undefined') || msg.includes('permit');
 
       if (tryWithoutPermitFallback && keyPairOrPermitIssue) {
         try {
-          const res = await cofheClient.decryptForTx(ctHash).withoutPermit().execute();
+          const res = await cofheClient
+            .decryptForTx(ctHash)
+            .setChainId(CHAIN_ID)
+            .withoutPermit()
+            .execute();
           return { decryptedValue: res.decryptedValue as bigint, signature: res.signature as string };
         } catch (fallbackErr) {
           lastErr = fallbackErr;
