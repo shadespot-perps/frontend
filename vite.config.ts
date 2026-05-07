@@ -32,7 +32,12 @@ export default defineConfig(({ mode }) => ({
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           const url = req.url ?? "";
-          if (url.startsWith("/node_modules/tweetnacl/nacl-fast.js")) {
+          const isNaclFast =
+            url.startsWith("/node_modules/tweetnacl/nacl-fast.js") ||
+            // pnpm path: /node_modules/.pnpm/<pkg>@<ver>/node_modules/tweetnacl/nacl-fast.js
+            /\/node_modules\/\.pnpm\/[^/]+\/node_modules\/tweetnacl\/nacl-fast\.js(\?.*)?$/.test(url);
+
+          if (isNaclFast) {
             res.statusCode = 200;
             res.setHeader("Content-Type", "application/javascript; charset=utf-8");
             res.end(
@@ -168,6 +173,8 @@ export default defineConfig(({ mode }) => ({
       { find: "tweetnacl/nacl-fast.js", replacement: path.resolve(__dirname, "./src/shims/tweetnacl-fast-default.ts") },
       // Some bundles end up importing the dev-server absolute path.
       { find: /\/node_modules\/tweetnacl\/nacl-fast\.js(\?.*)?$/, replacement: path.resolve(__dirname, "./src/shims/tweetnacl-fast-default.ts") },
+      // pnpm dev-server absolute path.
+      { find: /\/node_modules\/\.pnpm\/[^/]+\/node_modules\/tweetnacl\/nacl-fast\.js(\?.*)?$/, replacement: path.resolve(__dirname, "./src/shims/tweetnacl-fast-default.ts") },
     ],
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime", "@tanstack/react-query", "@tanstack/query-core"],
   },

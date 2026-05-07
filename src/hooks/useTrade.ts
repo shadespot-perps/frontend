@@ -90,7 +90,8 @@ export function useOpenPosition() {
         const [eCollateral, eLeverage, eTriggerPrice, eIsLong] = await encryptInputsOnChain([
           Encryptable.uint64(collateralWei),
           Encryptable.uint64(BigInt(params.leverage)),
-          Encryptable.uint128(parseUnits(params.triggerPrice.toString(), TOKEN_DECIMALS)),
+          // Oracle prices are 8 decimals on-chain; triggerPrice must use same scale.
+          Encryptable.uint128(parseUnits(params.triggerPrice.toString(), 8)),
           Encryptable.bool(params.isLong),
         ]);
 
@@ -107,7 +108,9 @@ export function useOpenPosition() {
             normaliseEnc(eTriggerPrice),
             normaliseEnc(eIsLong),
           ],
-          gas: 600_000n,  // CoFHE FHE ops — bypass broken gas sim
+          // CoFHE ops + FHERC20 transfer + storage writes are gas-heavy on Arbitrum.
+          // Keep a high explicit limit to avoid silent revert-at-cap.
+          gas: 2_000_000n,
           maxFeePerGas: fees.maxFeePerGas,
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
         });
@@ -478,9 +481,9 @@ export function useTradePrecheck(collateralUsd: number, leverage: number) {
 
   const warnings: string[] = [];
   if (oracleNeverSet) {
-    warnings.push('Oracle price not set — run `npm run update-price` in sdk/.');
+    warnings.push('Oracle price not set.');
   } else if (oracleStale) {
-    warnings.push(`Oracle price is stale (${priceAge}s old, max 300s) — run \`npm run update-price\` in sdk/.`);
+    warnings.push(`Oracle price is stale (${priceAge}s old, max ${ORACLE_STALE_SECONDS}s).`);
   }
 
   return {

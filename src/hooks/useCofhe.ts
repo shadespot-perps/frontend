@@ -1,6 +1,6 @@
 import { createCofheConfig, createCofheClient } from '@cofhe/sdk/web';
 import { chains } from '@cofhe/sdk/chains';
-import type { EncryptedItemInput, Encryptable } from '@cofhe/sdk';
+import type { EncryptedItemInput, EncryptableItem } from '@cofhe/sdk';
 import { useEffect, useRef, useState } from 'react';
 import { usePublicClient, useWalletClient } from 'wagmi';
 import { CHAIN_ID } from '@/lib/contracts';
@@ -34,7 +34,7 @@ export function normaliseEnc(enc: EncryptedItemInput) {
  * Encrypt inputs for the active chain (Arbitrum Sepolia) with an explicit chainId.
  * This avoids verifier-side mismatches when the SDK can't infer chainId reliably in-browser.
  */
-export async function encryptInputsOnChain(inputs: Encryptable[]) {
+export async function encryptInputsOnChain(inputs: EncryptableItem[]) {
   return await cofheClient
     .encryptInputs(inputs)
     .setChainId(CHAIN_ID)
@@ -42,16 +42,25 @@ export async function encryptInputsOnChain(inputs: Encryptable[]) {
 }
 
 export async function getSelfPermitSafe() {
-  type PermitLike = { sealingPair?: { privateKey?: string; publicKey?: string }; type?: string };
+  type PermitLike = {
+    sealingPair?: { privateKey?: string; publicKey?: string };
+    type?: string;
+    expiration?: number;
+  };
   const hasSealingPair = (permit: PermitLike | unknown): boolean => {
     const p = permit as PermitLike | null | undefined;
     return !!p?.sealingPair?.privateKey && !!p?.sealingPair?.publicKey;
+  };
+  const isExpired = (permit: PermitLike | unknown): boolean => {
+    const p = permit as PermitLike | null | undefined;
+    if (typeof p?.expiration !== 'number') return false;
+    return p.expiration < Math.floor(Date.now() / 1000);
   };
   const clearCorruptedPermitState = async () => {
     try {
       const all = await cofheClient.permits.getPermits();
       for (const [hash, permit] of Object.entries(all ?? {})) {
-        if (!hasSealingPair(permit)) {
+        if (!hasSealingPair(permit) || isExpired(permit)) {
           await cofheClient.permits.removePermit(hash);
         }
       }
@@ -64,8 +73,8 @@ export async function getSelfPermitSafe() {
   const tryGet = async () => {
     // Prefer an existing valid active permit to avoid regenerating key material.
     const active = await cofheClient.permits.getActivePermit();
-    if (active && hasSealingPair(active)) return active;
-    if (active && !hasSealingPair(active)) {
+    if (active && hasSealingPair(active) && !isExpired(active)) return active;
+    if (active && (!hasSealingPair(active) || isExpired(active))) {
       await cofheClient.permits.removeActivePermit();
     }
 
@@ -73,14 +82,14 @@ export async function getSelfPermitSafe() {
     const all = await cofheClient.permits.getPermits();
     for (const [hash, permit] of Object.entries(all ?? {})) {
       const p = permit as PermitLike;
-      if (p?.type === 'self' && hasSealingPair(p)) {
+      if (p?.type === 'self' && hasSealingPair(p) && !isExpired(p)) {
         cofheClient.permits.selectActivePermit(hash);
         return permit;
       }
     }
 
     // Create a new self permit when no valid stored one exists.
-    const issuer = cofheClient.account;
+    const issuer = (_lastWalletClient as any)?.account?.address as `0x${string}` | undefined;
     if (issuer) {
       return cofheClient.permits.createSelf({
         issuer,
@@ -92,7 +101,7 @@ export async function getSelfPermitSafe() {
   try {
     return await tryGet();
   } catch (err: unknown) {
-    const msg = String(err?.message ?? err ?? '');
+    const msg = err instanceof Error ? err.message : String(err ?? '');
     const shouldReconnect = msg.includes('keyPair') || msg.includes('Cannot read properties of undefined');
     if (!shouldReconnect || !_lastPublicClient || !_lastWalletClient) throw err;
 
@@ -129,7 +138,21 @@ export async function decryptForTxWithRetry(
       return { decryptedValue: res.decryptedValue as bigint, signature: res.signature as string };
     } catch (err: unknown) {
       lastErr = err;
-      const msg = String(err?.message ?? err ?? '');
+      const msg = err instanceof Error ? err.message : String(err ?? '');
+      const isExpiredPermit =
+        msg.includes('Permit is expired') ||
+        msg.includes('expired') && msg.toLowerCase().includes('permit');
+
+      if (isExpiredPermit) {
+        // Fast-path recovery: clear active permit so the next attempt re-creates it.
+        try {
+          await cofheClient.permits.removeActivePermit();
+        } catch {
+          // ignore
+        }
+        // Don't wait the full backoff if we already know the permit can't succeed.
+        if (attempt < retries) continue;
+      }
       const isForbidden = msg.includes('HTTP 403') || msg.includes('403 (Forbidden)') || msg.includes('403 Forbidden');
       if (isForbidden) {
         throw new Error(

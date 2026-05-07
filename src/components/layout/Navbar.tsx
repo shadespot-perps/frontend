@@ -20,9 +20,11 @@ export function Navbar() {
       <div className="flex h-14 items-center justify-between px-4 max-w-[1600px] mx-auto">
         {/* Logo */}
         <Link to="/trade" className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-md gradient-teal flex items-center justify-center">
-            <span className="text-sm font-bold text-shade-bg-primary">S</span>
-          </div>
+          <img
+            src="/shadespot_logo.jpeg"
+            alt="ShadeSpot"
+            className="w-10 h-10 rounded-md object-contain bg-secondary"
+          />
           <span className="font-semibold text-foreground tracking-tight hidden sm:block">ShadeSpot</span>
         </Link>
 

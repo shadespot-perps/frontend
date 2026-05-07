@@ -5,12 +5,12 @@ import { CONTRACTS, ORDER_MANAGER_ABI, FROM_BLOCK } from '@/lib/contracts';
 import { useStore, type Order } from '@/store/useStore';
 
 const PAIR = 'ETH-USD';
-const FHE_DECIMALS = 1e18;
 
 export function useOrders() {
   const { address } = useAccount();
   const publicClient = usePublicClient();
   const setOrders = useStore(s => s.setOrders);
+  const removeOrder = useStore(s => s.cancelOrder);
 
   useEffect(() => {
     if (!address || !publicClient) {
@@ -19,80 +19,123 @@ export function useOrders() {
     }
 
     let cancelled = false;
+    let inFlight = false;
     const omAddress = CONTRACTS.orderManager as `0x${string}`;
 
     async function fetch() {
       try {
+        if (inFlight) return;
+        inFlight = true;
         const currentBlock = await publicClient!.getBlockNumber();
-        const fromBlock = currentBlock > 200000n
-          ? currentBlock - 200000n > FROM_BLOCK ? currentBlock - 200000n : FROM_BLOCK
-          : FROM_BLOCK;
+        const fromBlock = FROM_BLOCK;
 
         const createdLogs = await publicClient!.getLogs({
           address: omAddress,
-          event: parseAbiItem('event OrderCreated(uint256 indexed orderId, address indexed trader, address token)'),
+          event: parseAbiItem('event OrderCreated(uint256 indexed orderId, address indexed trader, address token, bytes32 collateralHandle)'),
           args: { trader: address },
           fromBlock,
           toBlock: currentBlock,
         });
 
-        if (cancelled || createdLogs.length === 0) {
-          if (!cancelled) setOrders([]);
+        if (cancelled) return;
+
+        const existingIds = useStore.getState().orders.map(o => o.id);
+        const createdIds = createdLogs
+          .map(l => l.args.orderId)
+          .filter((x): x is bigint => typeof x === 'bigint')
+          .map(x => x.toString());
+
+        const ids = Array.from(new Set([...existingIds, ...createdIds]));
+        if (ids.length === 0) {
+          setOrders([]);
           return;
         }
 
-        const metas = await Promise.all(
-          createdLogs.map(async log => {
-            const orderId = log.args.orderId!;
-            try {
-              const meta = await publicClient!.readContract({
-                address: omAddress,
-                abi: ORDER_MANAGER_ABI,
-                functionName: 'getOrderMeta',
-                args: [orderId],
-              }) as {
-                trader: `0x${string}`;
-                token: `0x${string}`;
-                collateral: bigint;
-                leverage: bigint;
-                isLong: boolean;
-                isActive: boolean;
-              };
-              return { orderId, meta };
-            } catch {
-              return null;
-            }
-          })
-        );
+        // NOTE: `getOrderMeta` is permissioned (trader or router only), so public reads will revert.
+        // Build list from events + public `isOrderActive(orderId)`.
+        const activeFlags = await Promise.all(ids.map(async (idStr) => {
+          const orderId = BigInt(idStr);
+          try {
+            const isActive = await publicClient!.readContract({
+              address: omAddress,
+              abi: ORDER_MANAGER_ABI,
+              functionName: 'isOrderActive',
+              args: [orderId],
+            }) as boolean;
+            return { idStr, isActive };
+          } catch {
+            return { idStr, isActive: false };
+          }
+        }));
 
         if (cancelled) return;
 
-        const orders: Order[] = metas
-          .filter((m): m is NonNullable<typeof m> => m !== null && m.meta.isActive)
-          .map(({ orderId, meta }) => {
-            const collateralPlain = Number(meta.collateral) / FHE_DECIMALS;
-            const sizePlain = collateralPlain * Number(meta.leverage);
-            return {
-              id: orderId.toString(),
-              pool: 'fhe' as const,
-              pair: PAIR,
-              side: meta.isLong ? 'long' as const : 'short' as const,
-              type: 'limit' as const,
-              size: sizePlain,
-              price: 0,
-              status: 'pending' as const,
-              createdAt: new Date().toISOString(),
-              encrypted: true,
-            };
-          });
+        const orders: Order[] = activeFlags
+          .filter(x => x.isActive)
+          .map((x) => ({
+            id: x.idStr,
+            pool: 'fhe' as const,
+            pair: PAIR,
+            side: 'long' as const,
+            type: 'limit' as const,
+            size: 0,
+            price: 0,
+            status: 'pending' as const,
+            createdAt: new Date().toISOString(),
+            encrypted: true,
+          }));
 
         setOrders(orders);
       } catch (err) {
         console.error('[useOrders] fetch error:', err);
+      } finally {
+        inFlight = false;
       }
     }
 
     fetch();
-    return () => { cancelled = true; };
-  }, [address, publicClient, setOrders]);
+
+    const unwatch = publicClient.watchBlockNumber({
+      poll: true,
+      pollingInterval: 5_000,
+      onBlockNumber: () => void fetch(),
+    });
+
+    // Also remove orders as soon as we see them executed/cancelled.
+    const unwatchExecuted = publicClient.watchEvent({
+      address: omAddress,
+      event: parseAbiItem('event OrderExecuted(uint256 indexed orderId, address indexed trader)'),
+      args: { trader: address },
+      fromBlock: FROM_BLOCK,
+      poll: true,
+      pollingInterval: 5_000,
+      onLogs: (logs) => {
+        for (const l of logs) {
+          const id = l.args?.orderId;
+          if (id != null) removeOrder(id.toString());
+        }
+      },
+    });
+
+    const unwatchCancelled = publicClient.watchEvent({
+      address: omAddress,
+      event: parseAbiItem('event OrderCancelled(uint256 indexed orderId)'),
+      fromBlock: FROM_BLOCK,
+      poll: true,
+      pollingInterval: 5_000,
+      onLogs: (logs) => {
+        for (const l of logs) {
+          const id = l.args?.orderId;
+          if (id != null) removeOrder(id.toString());
+        }
+      },
+    });
+
+    return () => {
+      cancelled = true;
+      unwatch?.();
+      unwatchExecuted?.();
+      unwatchCancelled?.();
+    };
+  }, [address, publicClient, setOrders, removeOrder]);
 }

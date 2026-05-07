@@ -13,15 +13,15 @@ export const INDEX_TOKEN = '0x980B62Da83eFf3D4576C647993b0c1D7faf17c73' as const
 export const TOKEN_DECIMALS = 6;
 
 export const CONTRACTS = {
-  // Fresh deployment (Apr 28, 2026)
-  router:             '0x3F476E2D46eA857aD82DA28c41a15d336F3bA83D',
-  fheToken:           '0xe3843689B78709463a77Faa30d7A2Df72f56163b',
-  priceOracle:        '0x372cCb135c97e106eD44701e6170Ac4C06Dc3F72',
-  fundingRateManager: '0x53903cBAAdd1F5B6bAEa95F654B7A9De17F69D75',
-  vault:              '0xF522f386046644b359472E05340BB692751C5A37',
-  positionManager:    '0xD61852B3E1f0E8c49A8EB5dCD039926744b853f0',
-  orderManager:       '0xDEBA979720dF2454a1e34f9304F66dD0003BBf78',
-  liquidationManager: '0x09AB5a52d7f4f1c58D966634F2aBdAEa6cA0265f',
+  // Fresh deployment (May 07, 2026)
+  router:             '0x2Df347fd32cED9CD019C752E999f9ABf6E4613e4',
+  fheToken:           '0xDFF61c2e5fFB08bdfEd3520a37c86A2c976e3283',
+  priceOracle:        '0x5557D65E67124bA5b3ea3dAE17e9B473006bCd4E',
+  fundingRateManager: '0xa5e08198e0E6268413D398b908Afe303b4aB4623',
+  vault:              '0x96D1Cc159775457EE7c03FF98683959F10FCc91C',
+  positionManager:    '0xa9147bc8274a87FC63c8BEa1dBBF07c62cd557F1',
+  orderManager:       '0x81cA357f55b6C4763f2f5E1f11308D8e09457FA0',
+  liquidationManager: '0x921c6e48F5a698BaC282aB6B022aa124dFF225c6',
 } as const;
 
 // ─────────────────────────────────────────────────────────────
@@ -369,11 +369,19 @@ export const ORDER_MANAGER_ABI = [
     outputs: [
       { name: 'trader',     type: 'address' },
       { name: 'token',      type: 'address' },
-      { name: 'collateral', type: 'uint256' },
-      { name: 'leverage',   type: 'uint256' },
-      { name: 'isLong',     type: 'bool'    },
+      // CoFHE euint/ebool are returned as ciphertext handles (bytes32).
+      { name: 'collateral', type: 'bytes32' },
+      { name: 'leverage',   type: 'bytes32' },
+      { name: 'isLong',     type: 'bytes32' },
       { name: 'isActive',   type: 'bool'    },
     ],
+  },
+  {
+    name: 'isOrderActive',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'orderId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'bool' }],
   },
   {
     name: 'nextOrderId',
@@ -389,6 +397,7 @@ export const ORDER_MANAGER_ABI = [
       { name: 'orderId', type: 'uint256', indexed: true  },
       { name: 'trader',  type: 'address', indexed: true  },
       { name: 'token',   type: 'address', indexed: false },
+      { name: 'collateralHandle', type: 'bytes32', indexed: false },
     ],
   },
   {

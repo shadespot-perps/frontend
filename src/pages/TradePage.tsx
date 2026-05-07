@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { useAccount } from 'wagmi';
+import { useAccount, usePublicClient } from 'wagmi';
 import { useStore } from '@/store/useStore';
 import { useMarketData } from '@/hooks/useMarket';
 import { useOpenPosition, useCancelOrder, useClosePosition, useTradePrecheck } from '@/hooks/useTrade';
 import { usePositions } from '@/hooks/usePositions';
 import { useOrders } from '@/hooks/useOrders';
 import { useDecryptPosition } from '@/hooks/useDecryptPosition';
+import { CONTRACTS, FROM_BLOCK } from '@/lib/contracts';
 import { PriceDisplay } from '@/components/shade/PriceDisplay';
 import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
 import { EncryptedField } from '@/components/shade/EncryptedField';
@@ -17,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { TrendingUp, TrendingDown, X as XIcon, Shield, AlertTriangle } from 'lucide-react';
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, type IChartApi, type UTCTimestamp } from 'lightweight-charts';
+import { parseAbiItem } from 'viem';
 
 // Bridges injected wallet state (wagmi) → Zustand store
 // FHE token balances are encrypted — sync only connection state.
@@ -584,6 +586,7 @@ function OrdersTab() {
       {orders.map((order) => (
         <div key={order.id} className="flex items-center justify-between p-3 bg-secondary/50 rounded-md border border-border">
           <div className="flex items-center gap-3">
+            <span className="text-[10px] font-mono text-muted-foreground">#{order.id}</span>
             <span className={cn(
               'text-xs font-semibold px-1.5 py-0.5 rounded',
               order.side === 'long' ? 'bg-shade-green/15 text-shade-green' : 'bg-shade-red/15 text-shade-red'
@@ -619,6 +622,69 @@ export default function TradePage() {
   usePositions();  // reads PositionOpened events + checks exists on-chain
   useOrders();     // reads OrderCreated events + checks isActive on-chain
 
+  // Recent executions: derive from on-chain OrderExecuted logs (no hardcoded rows).
+  const { address } = useAccount();
+  const publicClient = usePublicClient();
+  const [executions, setExecutions] = useState<{ orderId: string; blockNumber: bigint; timestampMs: number }[]>([]);
+
+  useEffect(() => {
+    if (!address || !publicClient) {
+      setExecutions([]);
+      return;
+    }
+
+    let cancelled = false;
+    const omAddress = CONTRACTS.orderManager as `0x${string}`;
+
+    async function fetchRecent() {
+      try {
+        const currentBlock = await publicClient.getBlockNumber();
+        const fromBlock = currentBlock > 20_000n
+          ? (currentBlock - 20_000n > FROM_BLOCK ? currentBlock - 20_000n : FROM_BLOCK)
+          : FROM_BLOCK;
+
+        const logs = await publicClient.getLogs({
+          address: omAddress,
+          event: parseAbiItem('event OrderExecuted(uint256 indexed orderId, address indexed trader)'),
+          args: { trader: address },
+          fromBlock,
+          toBlock: currentBlock,
+        });
+
+        // newest first
+        const newest = [...logs].reverse().slice(0, 20);
+
+        const blocks = await Promise.all(newest.map(l => publicClient.getBlock({ blockNumber: l.blockNumber })));
+        const rows = newest.map((l, i) => ({
+          orderId: l.args.orderId!.toString(),
+          blockNumber: l.blockNumber,
+          timestampMs: Number(blocks[i]?.timestamp ?? 0n) * 1000,
+        }));
+
+        if (!cancelled) setExecutions(rows);
+      } catch (e) {
+        console.error('[TradePage] fetch executions error:', e);
+      }
+    }
+
+    fetchRecent();
+
+    const unwatch = publicClient.watchEvent({
+      address: omAddress,
+      event: parseAbiItem('event OrderExecuted(uint256 indexed orderId, address indexed trader)'),
+      args: { trader: address },
+      fromBlock: FROM_BLOCK,
+      poll: true,
+      pollingInterval: 5_000,
+      onLogs: () => void fetchRecent(),
+    });
+
+    return () => {
+      cancelled = true;
+      unwatch?.();
+    };
+  }, [address, publicClient]);
+
   return (
     <div className="animate-fade-in">
       <TickerBar />
@@ -651,27 +717,26 @@ export default function TradePage() {
                 <OrdersTab />
               </TabsContent>
               <TabsContent value="executions" className="p-4">
-                <div className="space-y-2">
-                  {[
-                    { pair: 'ETH-USD', side: 'long', price: 3842.10, size: '0.5 ETH', time: '2 min ago' },
-                    { pair: 'BTC-USD', side: 'short', price: 69732.00, size: '0.02 BTC', time: '15 min ago' },
-                    { pair: 'ETH-USD', side: 'long', price: 3838.50, size: '1.2 ETH', time: '28 min ago' },
-                  ].map((ex, i) => (
-                    <div key={i} className="flex items-center justify-between p-2.5 bg-secondary/30 rounded-md text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className={cn('font-semibold', ex.side === 'long' ? 'text-shade-green' : 'text-shade-red')}>
-                          {ex.side.toUpperCase()}
-                        </span>
-                        <span className="text-foreground">{ex.pair}</span>
+                {executions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-6">No executions yet</p>
+                ) : (
+                  <div className="space-y-2">
+                    {executions.map((ex) => (
+                      <div key={`${ex.blockNumber.toString()}-${ex.orderId}`} className="flex items-center justify-between p-2.5 bg-secondary/30 rounded-md text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-muted-foreground">Executed</span>
+                          <span className="font-mono text-foreground">#{ex.orderId}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="font-mono text-muted-foreground">block {ex.blockNumber.toString()}</span>
+                          <span className="text-muted-foreground">
+                            {ex.timestampMs > 0 ? new Date(ex.timestampMs).toLocaleString() : '—'}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4">
-                        <span className="font-mono">{ex.size}</span>
-                        <span className="font-mono">@ ${ex.price.toLocaleString()}</span>
-                        <span className="text-muted-foreground">{ex.time}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </TabsContent>
             </Tabs>
           </div>
