@@ -167,19 +167,7 @@ export default function LandingPage() {
 
       <header className="relative z-10 border-b border-border/60 bg-background/70 backdrop-blur-xl motion-safe:animate-landing-fade-up motion-reduce:opacity-100">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <Link
-            to="/"
-            className="group flex items-center gap-2 transition-transform duration-300 hover:scale-[1.02] active:scale-[0.98]"
-          >
-            <img
-              src="/shadespot_logo.jpeg"
-              alt="ShadeSpot"
-              className="h-8 w-8 rounded-md object-contain bg-secondary ring-1 ring-border transition-[box-shadow] duration-300 group-hover:shadow-[0_0_20px_hsl(160_90%_43%/0.25)]"
-            />
-            <span className="text-sm font-semibold tracking-tight transition-colors duration-300 group-hover:text-primary">
-              ShadeSpot
-            </span>
-          </Link>
+          <div aria-hidden />
           <Button
             size="sm"
             className="group gap-1.5 rounded-full px-5 transition-all duration-300 hover:scale-[1.03] hover:shadow-[0_0_24px_hsl(160_90%_43%/0.35)] active:scale-[0.97]"
@@ -198,7 +186,7 @@ export default function LandingPage() {
         <section className="flex flex-1 flex-col justify-center px-4 pb-16 pt-10 sm:px-6 sm:pb-24 sm:pt-16">
           <div className="mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 lg:grid-cols-12 lg:gap-6 xl:gap-10">
             <div className="lg:col-span-6 xl:col-span-5">
-              <h1 className="isolate max-w-full text-balance text-[clamp(2.25rem,6vw,3.75rem)] font-semibold leading-[1.18] tracking-tight sm:leading-[1.14] motion-safe:animate-landing-fade-up motion-reduce:opacity-100">
+              <h1 className="font-display isolate max-w-full text-balance text-[clamp(2.25rem,6vw,3.75rem)] font-semibold leading-[1.18] tracking-tight sm:leading-[1.14] motion-safe:animate-landing-fade-up motion-reduce:opacity-100">
                 <span className="block">Perpetuals</span>
                 <span
                   className={cn(
@@ -286,7 +274,7 @@ export default function LandingPage() {
             <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary motion-safe:animate-landing-fade-up motion-reduce:opacity-100">
               Surface
             </p>
-            <h2 className="mt-2 max-w-lg text-2xl font-semibold tracking-tight motion-safe:animate-landing-fade-up motion-safe:delay-75 motion-reduce:opacity-100 sm:text-3xl">
+            <h2 className="font-display mt-2 max-w-lg text-2xl font-semibold tracking-tight motion-safe:animate-landing-fade-up motion-safe:delay-75 motion-reduce:opacity-100 sm:text-3xl">
               A desk that feels expensive, without the noise.
             </h2>
             <div className="mt-10 grid gap-3 sm:gap-4 md:grid-cols-12">
@@ -298,7 +286,7 @@ export default function LandingPage() {
                       <BarChart2 className="h-3 w-3 text-primary motion-safe:animate-pulse-teal motion-reduce:animate-none" />
                       Live posture
                     </span>
-                    <h3 className="mt-5 text-lg font-semibold tracking-tight transition-colors duration-300 group-hover:text-primary/95 sm:text-xl">
+                    <h3 className="font-display mt-5 text-lg font-semibold tracking-tight transition-colors duration-300 group-hover:text-primary/95 sm:text-xl">
                       Read the tape, blur the rest.
                     </h3>
                     <p className="mt-2 max-w-sm text-sm text-muted-foreground">
@@ -325,7 +313,7 @@ export default function LandingPage() {
                     <Layers className="h-5 w-5 stroke-[1.5]" />
                   </div>
                   <div className="mt-6">
-                    <h3 className="font-semibold tracking-tight">Two pools, one workflow</h3>
+                    <h3 className="font-display font-semibold tracking-tight">Two pools, one workflow</h3>
                     <p className="mt-1.5 text-sm text-muted-foreground">
                       Standard or maximum discretion. Switch when your mandate shifts.
                     </p>
@@ -343,7 +331,7 @@ export default function LandingPage() {
                     <Zap className="h-5 w-5 stroke-[1.5]" />
                   </div>
                   <div className="mt-6">
-                    <h3 className="font-semibold tracking-tight">Built for velocity</h3>
+                    <h3 className="font-display font-semibold tracking-tight">Built for velocity</h3>
                     <p className="mt-1.5 text-sm text-muted-foreground">
                       Familiar perp flows, tuned for operators who move fast.
                     </p>
@@ -360,7 +348,9 @@ export default function LandingPage() {
             <div className="flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-end">
               <div className="motion-safe:animate-landing-fade-up motion-reduce:opacity-100">
                 <p className="text-xs font-medium uppercase tracking-[0.25em] text-primary">Rhythm</p>
-                <h2 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">From wire to unwind</h2>
+                <h2 className="font-display mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
+                  From wire to unwind
+                </h2>
               </div>
               <p className="max-w-xs text-sm text-muted-foreground motion-safe:animate-landing-fade-up motion-safe:delay-100 motion-reduce:opacity-100">
                 Three beats. No handbook required.
@@ -380,7 +370,7 @@ export default function LandingPage() {
                   <span className="font-mono text-4xl font-semibold tabular-nums text-primary/[0.18] transition-all duration-500 group-hover:scale-105 group-hover:text-primary/35">
                     {step}
                   </span>
-                  <h3 className="mt-4 font-semibold tracking-tight">{title}</h3>
+                  <h3 className="font-display mt-4 font-semibold tracking-tight">{title}</h3>
                   <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{line}</p>
                   <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-primary/[0.06] blur-2xl transition-opacity duration-500 group-hover:opacity-100 motion-safe:animate-landing-orb-pulse motion-reduce:animate-none" />
                 </div>
@@ -401,7 +391,7 @@ export default function LandingPage() {
               style={{ animationDelay: '1.2s' }}
             />
             <Sparkles className="relative mx-auto h-8 w-8 text-primary/90 motion-safe:animate-landing-sparkle motion-reduce:animate-none" />
-            <h2 className="relative mx-auto mt-5 max-w-md text-2xl font-semibold tracking-tight sm:text-3xl">
+            <h2 className="font-display relative mx-auto mt-5 max-w-md text-2xl font-semibold tracking-tight sm:text-3xl">
               Claim your lane on the floor.
             </h2>
             <p className="relative mx-auto mt-3 max-w-sm text-sm text-muted-foreground">
