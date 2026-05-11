@@ -19,7 +19,7 @@ export function Navbar() {
     <nav className="sticky top-0 z-50 border-b border-border bg-shade-bg-primary/95 backdrop-blur-md">
       <div className="flex h-14 items-center justify-between px-4 max-w-[1600px] mx-auto">
         {/* Logo */}
-        <Link to="/trade" className="flex items-center gap-2">
+        <Link to="/" className="flex items-center gap-2">
           <img
             src="/shadespot_logo.jpeg"
             alt="ShadeSpot"

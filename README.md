@@ -53,6 +53,16 @@ Market opens use a two-phase CoFHE pattern:
 3. Decrypt check handle through CoFHE TN
 4. Submit finalize tx with plaintext + TN signature
 
+Visual flow (same sequence as on-chain steps):
+
+![Open position — overview](diagrams/Open%20Position.png)
+
+![Open position — continuation](diagrams/Open%20Position%202.png)
+
+![Open position — continuation](diagrams/Open%20Position%203.png)
+
+![Open position — continuation](diagrams/Open%20Position%204.png)
+
 Implementation lives primarily in:
 
 - `src/hooks/useTrade.ts`
