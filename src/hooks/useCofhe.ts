@@ -3,11 +3,10 @@ import { chains } from '@cofhe/sdk/chains';
 import type { EncryptedItemInput, EncryptableItem } from '@cofhe/sdk';
 import { useEffect, useRef, useState } from 'react';
 import { usePublicClient, useWalletClient } from 'wagmi';
-import { CHAIN_ID } from '@/lib/contracts';
 import type { PublicClient, WalletClient } from 'viem';
 
 // Module-level singletons — created once, shared across all hooks.
-const _config = createCofheConfig({ supportedChains: [chains.arbSepolia] });
+const _config = createCofheConfig({ supportedChains: [chains.arbSepolia, chains.sepolia, chains.baseSepolia] });
 export const cofheClient = createCofheClient(_config);
 
 let _cofheReady = false;
@@ -34,10 +33,10 @@ export function normaliseEnc(enc: EncryptedItemInput) {
  * Encrypt inputs for the active chain (Arbitrum Sepolia) with an explicit chainId.
  * This avoids verifier-side mismatches when the SDK can't infer chainId reliably in-browser.
  */
-export async function encryptInputsOnChain(inputs: EncryptableItem[]) {
+export async function encryptInputsOnChain(chainId: number, inputs: EncryptableItem[]) {
   return await cofheClient
     .encryptInputs(inputs)
-    .setChainId(CHAIN_ID)
+    .setChainId(chainId)
     .execute();
 }
 
@@ -89,7 +88,7 @@ export async function getSelfPermitSafe() {
     }
 
     // Create a new self permit when no valid stored one exists.
-    const issuer = (_lastWalletClient as any)?.account?.address as `0x${string}` | undefined;
+    const issuer = _lastWalletClient?.account?.address as `0x${string}` | undefined;
     if (issuer) {
       return cofheClient.permits.createSelf({
         issuer,
@@ -117,12 +116,19 @@ export async function getSelfPermitSafe() {
 
 export async function decryptForTxWithRetry(
   ctHash: bigint,
-  options?: { label?: string; retries?: number; delayMs?: number; tryWithoutPermitFallback?: boolean }
+  options?: {
+    chainId?: number;
+    label?: string;
+    retries?: number;
+    delayMs?: number;
+    tryWithoutPermitFallback?: boolean;
+  }
 ): Promise<{ decryptedValue: bigint; signature: string }> {
   const label = options?.label ?? 'decryptForTx';
   const retries = options?.retries ?? 12;
   const delayMs = options?.delayMs ?? 5000;
   const tryWithoutPermitFallback = options?.tryWithoutPermitFallback ?? false;
+  const chainId = options?.chainId ?? 421614;
   let lastErr: unknown;
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -132,7 +138,7 @@ export async function decryptForTxWithRetry(
       const permit = await getSelfPermitSafe();
       const res = await cofheClient
         .decryptForTx(ctHash)
-        .setChainId(CHAIN_ID)
+        .setChainId(chainId)
         .withPermit(permit)
         .execute();
       return { decryptedValue: res.decryptedValue as bigint, signature: res.signature as string };
@@ -154,27 +160,28 @@ export async function decryptForTxWithRetry(
         if (attempt < retries) continue;
       }
       const isForbidden = msg.includes('HTTP 403') || msg.includes('403 (Forbidden)') || msg.includes('403 Forbidden');
-      if (isForbidden) {
-        throw new Error(
-          `${label} failed: CoFHE Threshold Network returned HTTP 403. ` +
-          `This usually means chainId/permit mismatch or the TN endpoint is refusing the request. ` +
-          `Make sure the connected wallet is on chainId=${CHAIN_ID} and try again.`
-        );
-      }
       const keyPairOrPermitIssue =
         msg.includes('keyPair') || msg.includes('Cannot read properties of undefined') || msg.includes('permit');
 
-      if (tryWithoutPermitFallback && keyPairOrPermitIssue) {
+      if (tryWithoutPermitFallback && (isForbidden || keyPairOrPermitIssue)) {
         try {
           const res = await cofheClient
             .decryptForTx(ctHash)
-            .setChainId(CHAIN_ID)
+            .setChainId(chainId)
             .withoutPermit()
             .execute();
           return { decryptedValue: res.decryptedValue as bigint, signature: res.signature as string };
         } catch (fallbackErr) {
           lastErr = fallbackErr;
         }
+      }
+
+      if (isForbidden) {
+        throw new Error(
+          `${label} failed: CoFHE Threshold Network returned HTTP 403. ` +
+          `The contract may not grant decrypt access for this ciphertext (check FHE.allow / allowPublic on-chain). ` +
+          `Wallet must be on chainId=${chainId}.`
+        );
       }
 
       if (attempt < retries) {

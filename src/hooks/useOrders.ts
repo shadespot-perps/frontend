@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
-import { useAccount, usePublicClient } from 'wagmi';
+import { useAccount, useChainId, usePublicClient } from 'wagmi';
 import { parseAbiItem } from 'viem';
-import { CONTRACTS, ORDER_MANAGER_ABI, FROM_BLOCK } from '@/lib/contracts';
+import { getContracts, getFromBlock, ORDER_MANAGER_ABI } from '@/lib/contracts';
 import { useStore, type Order } from '@/store/useStore';
 
 const PAIR = 'ETH-USD';
@@ -9,6 +9,10 @@ const PAIR = 'ETH-USD';
 export function useOrders() {
   const { address } = useAccount();
   const publicClient = usePublicClient();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const fromBlockDefault = getFromBlock(chainId);
+  const omAddress = contracts.orderManager as `0x${string}`;
   const setOrders = useStore(s => s.setOrders);
   const removeOrder = useStore(s => s.cancelOrder);
 
@@ -20,14 +24,16 @@ export function useOrders() {
 
     let cancelled = false;
     let inFlight = false;
-    const omAddress = CONTRACTS.orderManager as `0x${string}`;
 
     async function fetch() {
       try {
         if (inFlight) return;
         inFlight = true;
         const currentBlock = await publicClient!.getBlockNumber();
-        const fromBlock = FROM_BLOCK;
+        const fromBlock =
+          fromBlockDefault > 0n
+            ? fromBlockDefault
+            : (currentBlock > 9_000n ? currentBlock - 9_000n : 0n);
 
         const createdLogs = await publicClient!.getLogs({
           address: omAddress,
@@ -106,7 +112,7 @@ export function useOrders() {
       address: omAddress,
       event: parseAbiItem('event OrderExecuted(uint256 indexed orderId, address indexed trader)'),
       args: { trader: address },
-      fromBlock: FROM_BLOCK,
+      fromBlock: fromBlockDefault,
       poll: true,
       pollingInterval: 5_000,
       onLogs: (logs) => {
@@ -120,7 +126,7 @@ export function useOrders() {
     const unwatchCancelled = publicClient.watchEvent({
       address: omAddress,
       event: parseAbiItem('event OrderCancelled(uint256 indexed orderId)'),
-      fromBlock: FROM_BLOCK,
+      fromBlock: fromBlockDefault,
       poll: true,
       pollingInterval: 5_000,
       onLogs: (logs) => {
@@ -137,5 +143,5 @@ export function useOrders() {
       unwatchExecuted?.();
       unwatchCancelled?.();
     };
-  }, [address, publicClient, setOrders, removeOrder]);
+  }, [address, publicClient, setOrders, removeOrder, fromBlockDefault, omAddress]);
 }

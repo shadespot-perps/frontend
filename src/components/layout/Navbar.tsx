@@ -9,6 +9,7 @@ const navItems = [
   { to: '/positions', label: 'Positions' },
   { to: '/earn', label: 'Earn' },
   { to: '/analytics', label: 'Analytics' },
+  ...(import.meta.env.DEV ? [{ to: '/dev/faucet', label: 'Faucet' }] : []),
 ];
 
 export function Navbar() {
@@ -35,9 +36,9 @@ export function Navbar() {
               key={to}
               to={to}
               className={cn(
-                'px-3 py-1.5 text-sm rounded-md transition-colors',
+                'px-3 py-1.5 text-sm rounded-full transition-colors',
                 pathname.startsWith(to)
-                  ? 'bg-accent text-foreground font-medium'
+                  ? 'bg-accent text-foreground font-medium shadow-sm'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
               )}
             >
@@ -49,19 +50,19 @@ export function Navbar() {
         {/* Right side */}
         <div className="flex items-center gap-3">
           {/* FHE Status */}
-          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-shade-teal/10 border border-shade-teal/20">
+          <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-shade-teal/10 border border-shade-teal/20">
             <span className="text-shade-teal text-xs">⬡</span>
-            <span className="text-[11px] font-mono text-shade-teal">FHE Active</span>
+            <span className="text-[11px] font-medium text-shade-teal">Privacy mode</span>
           </div>
 
           {/* Network */}
-          <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-md bg-secondary">
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-full bg-secondary/60 border border-border/60">
             <div className="w-1.5 h-1.5 rounded-full bg-shade-green" />
             <span className="text-[11px] text-muted-foreground">Fhenix</span>
           </div>
 
           {/* Wallet */}
-          <ConnectButton />
+          <ConnectButton showBalance={false} chainStatus="icon" accountStatus="address" />
 
           {/* Mobile menu toggle */}
           <button

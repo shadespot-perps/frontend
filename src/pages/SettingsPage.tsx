@@ -3,6 +3,8 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Key, Bell, Shield, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { Switch } from '@/components/ui/switch';
+import { PageShell } from '@/components/layout/PageShell';
 
 export default function SettingsPage() {
   const { permits, revokePermit, wallet } = useStore();
@@ -14,8 +16,11 @@ export default function SettingsPage() {
   });
 
   return (
-    <div className="max-w-[900px] mx-auto p-4 space-y-6 animate-fade-in">
-      <h1 className="text-xl font-semibold text-foreground">Settings</h1>
+    <PageShell
+      title="Settings"
+      subtitle="Manage permits, notifications, and operator status."
+      width="lg"
+    >
 
       {/* Active Permits */}
       <div className="shade-card p-5 space-y-4">
@@ -27,7 +32,7 @@ export default function SettingsPage() {
         ) : (
           <div className="space-y-2">
             {permits.filter(p => p.active).map((permit) => (
-              <div key={permit.id} className="flex items-center justify-between p-3 rounded-md bg-secondary/50 border border-border">
+              <div key={permit.id} className="flex items-center justify-between gap-3 p-4 rounded-xl bg-secondary/40 border border-border/70">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm text-foreground">{permit.recipient}</span>
@@ -57,20 +62,22 @@ export default function SettingsPage() {
         </h2>
         <div className="space-y-3">
           {Object.entries(notifications).map(([key, val]) => (
-            <div key={key} className="flex items-center justify-between">
-              <span className="text-sm text-foreground capitalize">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
-              <button
-                onClick={() => setNotifications(n => ({ ...n, [key]: !val }))}
-                className={cn(
-                  'w-10 h-5 rounded-full transition-colors relative',
-                  val ? 'bg-shade-teal' : 'bg-secondary'
-                )}
-              >
-                <div className={cn(
-                  'w-4 h-4 rounded-full bg-foreground absolute top-0.5 transition-all',
-                  val ? 'left-5.5 left-[22px]' : 'left-0.5'
-                )} />
-              </button>
+            <div key={key} className="flex items-center justify-between gap-4 rounded-xl bg-secondary/30 border border-border/60 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground capitalize">
+                  {key.replace(/([A-Z])/g, ' $1').trim()}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {key === 'liquidationWarning' && 'Warn me when liquidation risk increases.'}
+                  {key === 'orderFilled' && 'Notify when an order is executed.'}
+                  {key === 'fundingPayment' && 'Funding rate settlements and receipts.'}
+                  {key === 'governanceVote' && 'Protocol votes and parameter updates.'}
+                </p>
+              </div>
+              <Switch
+                checked={val}
+                onCheckedChange={() => setNotifications(n => ({ ...n, [key]: !val }))}
+              />
             </div>
           ))}
         </div>
@@ -101,6 +108,6 @@ export default function SettingsPage() {
           <p className="text-sm text-muted-foreground">Connect wallet to manage operator status.</p>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

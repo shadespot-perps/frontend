@@ -6,43 +6,43 @@
 
 @layer base {
   :root {
-    /* ShadeSpot Dark Terminal Design System */
-    --background: 220 20% 3%;
-    --foreground: 210 20% 90%;
+    /* ShadeSpot Dark (modern minimal) */
+    --background: 220 22% 3%;
+    --foreground: 210 25% 92%;
 
-    --card: 220 18% 6%;
-    --card-foreground: 210 20% 90%;
+    --card: 220 18% 7%;
+    --card-foreground: 210 25% 92%;
 
-    --popover: 220 18% 6%;
-    --popover-foreground: 210 20% 90%;
+    --popover: 220 18% 7%;
+    --popover-foreground: 210 25% 92%;
 
     --primary: 160 90% 43%;
     --primary-foreground: 220 20% 3%;
 
-    --secondary: 220 15% 12%;
-    --secondary-foreground: 210 20% 90%;
+    --secondary: 220 16% 12%;
+    --secondary-foreground: 210 25% 92%;
 
-    --muted: 220 14% 10%;
-    --muted-foreground: 215 15% 50%;
+    --muted: 220 16% 10%;
+    --muted-foreground: 215 18% 58%;
 
-    --accent: 220 15% 14%;
-    --accent-foreground: 210 20% 90%;
+    --accent: 220 16% 14%;
+    --accent-foreground: 210 25% 92%;
 
     --destructive: 0 72% 51%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 220 14% 14%;
-    --input: 220 14% 14%;
+    --border: 220 14% 16%;
+    --input: 220 14% 16%;
     --ring: 160 90% 43%;
 
     --radius: 0.5rem;
 
     /* ShadeSpot Semantic */
-    --shade-bg-primary: 220 20% 3%;
-    --shade-bg-secondary: 220 18% 5%;
-    --shade-bg-tertiary: 220 16% 8%;
-    --shade-bg-elevated: 220 14% 11%;
-    --shade-bg-high: 220 12% 14%;
+    --shade-bg-primary: 220 22% 3%;
+    --shade-bg-secondary: 220 18% 6%;
+    --shade-bg-tertiary: 220 16% 9%;
+    --shade-bg-elevated: 220 16% 12%;
+    --shade-bg-high: 220 14% 16%;
 
     --shade-teal: 160 90% 43%;
     --shade-teal-dim: 160 60% 28%;
@@ -51,9 +51,9 @@
     --shade-amber: 38 92% 50%;
     --shade-blue: 217 91% 60%;
 
-    --shade-text-primary: 210 20% 90%;
-    --shade-text-secondary: 215 15% 60%;
-    --shade-text-muted: 215 12% 40%;
+    --shade-text-primary: 210 25% 92%;
+    --shade-text-secondary: 215 18% 68%;
+    --shade-text-muted: 215 14% 46%;
 
     /* Privacy Badge Colors */
     --badge-zk: 160 90% 43%;
@@ -61,12 +61,12 @@
     --badge-public: 215 12% 40%;
 
     --sidebar-background: 220 18% 5%;
-    --sidebar-foreground: 210 20% 90%;
+    --sidebar-foreground: 210 25% 92%;
     --sidebar-primary: 160 90% 43%;
     --sidebar-primary-foreground: 220 20% 3%;
     --sidebar-accent: 220 15% 14%;
-    --sidebar-accent-foreground: 210 20% 90%;
-    --sidebar-border: 220 14% 14%;
+    --sidebar-accent-foreground: 210 25% 92%;
+    --sidebar-border: 220 14% 16%;
     --sidebar-ring: 160 90% 43%;
   }
 }
@@ -87,13 +87,30 @@
 }
 
 @layer components {
+  .app-backdrop {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .app-backdrop::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(900px 600px at 12% -8%, hsl(160 90% 43% / 0.10), transparent 60%),
+      radial-gradient(700px 520px at 100% 18%, hsl(217 91% 60% / 0.06), transparent 52%),
+      radial-gradient(900px 720px at 50% 120%, hsl(160 90% 43% / 0.06), transparent 55%);
+  }
+
   .shade-card {
-    @apply bg-card border border-border rounded-lg;
+    @apply bg-card border border-border rounded-2xl shadow-[0_18px_70px_-40px_rgba(0,0,0,0.72)];
   }
 
   .shade-card-elevated {
     background: hsl(var(--shade-bg-elevated));
-    @apply border border-border rounded-lg;
+    @apply border border-border rounded-2xl shadow-[0_18px_70px_-40px_rgba(0,0,0,0.72)];
   }
 
   .encrypted-blur {

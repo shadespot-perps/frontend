@@ -2,6 +2,7 @@ import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Activity, BarChart3, TrendingUp, Users } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import { PageShell } from '@/components/layout/PageShell';
 
 export default function AnalyticsPage() {
   const { market } = useStore();
@@ -38,23 +39,25 @@ export default function AnalyticsPage() {
   ];
 
   return (
-    <div className="max-w-[1200px] mx-auto p-4 space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-foreground">Analytics</h1>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-shade-bg-secondary border border-border">
-          <span className="text-xs text-muted-foreground">Privacy Legend:</span>
+    <PageShell
+      title="Analytics"
+      subtitle="Network-wide metrics. Some aggregates are coming soon."
+      actions={(
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-shade-bg-secondary/60 border border-border/70">
+          <span className="text-xs text-muted-foreground">Legend</span>
           <PrivacyBadge level="ZK" />
           <PrivacyBadge level="DP" />
           <PrivacyBadge level="PUBLIC" />
         </div>
-      </div>
+      )}
+    >
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {stats.map((s) => {
           const Icon = s.icon;
           return (
-            <div key={s.label} className="shade-card p-4 space-y-3">
+            <div key={s.label} className="shade-card p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Icon className="w-4 h-4 text-shade-teal" />
@@ -62,7 +65,7 @@ export default function AnalyticsPage() {
                 </div>
                 <PrivacyBadge level={s.badge} />
               </div>
-              <p className="text-2xl font-mono font-bold text-foreground">{s.value}</p>
+              <p className="text-2xl font-semibold tracking-tight text-foreground">{s.value}</p>
               <p className="text-[11px] text-shade-text-muted">{s.sub}</p>
             </div>
           );
@@ -76,7 +79,7 @@ export default function AnalyticsPage() {
           <PrivacyBadge level="DP" />
         </div>
         <div className="p-4 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
-          Coming soon — this will show DP bucket aggregates once the analytics pipeline is wired.
+          Coming soon. DP bucket aggregates will appear once the pipeline is wired.
         </div>
       </div>
 
@@ -87,7 +90,7 @@ export default function AnalyticsPage() {
           <PrivacyBadge level="ZK" />
         </div>
         <div className="p-4 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
-          Coming soon — this will be replaced with a real funding epoch series.
+          Coming soon. Funding epoch data will appear once available.
         </div>
       </div>
 
@@ -98,7 +101,7 @@ export default function AnalyticsPage() {
           <PrivacyBadge level="ZK" />
         </div>
         <div className="p-4 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
-          Coming soon — this will show ZK-proven aggregate volume.
+          Coming soon. ZK-proven aggregate volume will appear once ready.
         </div>
       </div>
 
@@ -115,6 +118,6 @@ export default function AnalyticsPage() {
           </AccordionContent>
         </AccordionItem>
       </Accordion>
-    </div>
+    </PageShell>
   );
 }

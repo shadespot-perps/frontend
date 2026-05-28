@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { Unlock } from 'lucide-react';
 import { useMarketData } from '@/hooks/useMarket';
 import { useDecryptPosition } from '@/hooks/useDecryptPosition';
+import { PageShell } from '@/components/layout/PageShell';
 
 export default function PositionsPage() {
   useMarketData();
@@ -23,31 +24,43 @@ export default function PositionsPage() {
   };
 
   return (
-    <div className="max-w-[1600px] mx-auto p-4 space-y-4 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-foreground">Positions</h1>
-        <Button variant="outline" size="sm" onClick={handleBatchDecrypt} className="border-shade-teal/30 text-shade-teal text-xs">
-          <Unlock className="w-3.5 h-3.5 mr-1.5" /> Batch Decrypt All
+    <PageShell
+      title="Positions"
+      subtitle="Your open positions. Decrypt to reveal private fields."
+      width="2xl"
+      actions={
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleBatchDecrypt}
+          className="border-shade-teal/30 text-shade-teal text-xs rounded-full"
+        >
+          <Unlock className="w-3.5 h-3.5 mr-1.5" /> Batch decrypt
         </Button>
-      </div>
-
+      }
+    >
       {positions.length === 0 ? (
-        <div className="shade-card p-12 text-center">
-          <p className="text-muted-foreground">No open positions</p>
+        <div className="shade-card p-10 sm:p-14 text-center">
+          <p className="font-display text-lg font-semibold text-foreground">Nothing open</p>
+          <p className="mt-2 text-sm text-muted-foreground">Your next position will show up here.</p>
         </div>
       ) : (
         <div className="space-y-3">
           {positions.map((pos) => (
-            <div key={pos.id} className="shade-card p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
+            <div key={pos.id} className="shade-card p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold">{pos.pair}</span>
-                  <span className={cn(
-                    'text-xs font-semibold px-1.5 py-0.5 rounded',
-                    pos.status === 'decrypted'
-                      ? (pos.side === 'long' ? 'bg-shade-green/15 text-shade-green' : 'bg-shade-red/15 text-shade-red')
-                      : 'bg-secondary text-muted-foreground'
-                  )}>
+                  <span
+                    className={cn(
+                      'text-xs font-semibold px-2 py-0.5 rounded-full',
+                      pos.status === 'decrypted'
+                        ? (pos.side === 'long'
+                          ? 'bg-shade-green/15 text-shade-green'
+                          : 'bg-shade-red/15 text-shade-red')
+                        : 'bg-secondary/70 text-muted-foreground',
+                    )}
+                  >
                     {pos.status === 'decrypted'
                       ? `${pos.side.toUpperCase()} ${pos.leverage}x`
                       : pos.status === 'decrypting'
@@ -56,12 +69,10 @@ export default function PositionsPage() {
                   </span>
                   <PoolBadge pool={pos.pool} />
                 </div>
-                <div className="flex items-center gap-2">
-                  <DecryptButton status={pos.status} onDecrypt={() => decryptPosition(pos.id)} />
-                </div>
+                <DecryptButton status={pos.status} onDecrypt={() => decryptPosition(pos.id)} />
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
                 <div>
                   <span className="text-muted-foreground">Size</span>
                   <div className="mt-1">
@@ -106,8 +117,8 @@ export default function PositionsPage() {
                 </div>
               </div>
 
-              <div className="mt-3">
-                <span className="text-[10px] text-muted-foreground">Liquidation Risk</span>
+              <div className="mt-4">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Liquidation risk</span>
                 <HeatmapBar
                   value={
                     pos.status === 'decrypted' && pos.markPrice > 0
@@ -121,6 +132,6 @@ export default function PositionsPage() {
           ))}
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }

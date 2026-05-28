@@ -1,6 +1,6 @@
-import { useReadContract } from 'wagmi';
+import { useChainId, useReadContract } from 'wagmi';
 import {
-  CONTRACTS, INDEX_TOKEN,
+  getContracts, getIndexToken,
   PRICE_ORACLE_ABI, FUNDING_RATE_MANAGER_ABI,
 } from '@/lib/contracts';
 import { useStore } from '@/store/useStore';
@@ -9,28 +9,31 @@ import { useEffect } from 'react';
 export function useMarketData(options?: { includePrice?: boolean }) {
   const updateMarket = useStore((s) => s.updateMarket);
   const includePrice = options?.includePrice ?? true;
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const indexToken = getIndexToken(chainId);
 
   const { data: priceRaw } = useReadContract({
-    address: CONTRACTS.priceOracle,
+    address: contracts.priceOracle,
     abi: PRICE_ORACLE_ABI,
     functionName: 'getPrice',
-    args: [INDEX_TOKEN],
+    args: [indexToken],
     query: { enabled: includePrice, refetchInterval: 5_000 },
   });
 
   const { data: fundingRaw } = useReadContract({
-    address: CONTRACTS.fundingRateManager,
+    address: contracts.fundingRateManager,
     abi: FUNDING_RATE_MANAGER_ABI,
     functionName: 'getFundingRate',
-    args: [INDEX_TOKEN],
+    args: [indexToken],
     query: { refetchInterval: 15_000 },
   });
 
   const { data: oiRaw } = useReadContract({
-    address: CONTRACTS.fundingRateManager,
+    address: contracts.fundingRateManager,
     abi: FUNDING_RATE_MANAGER_ABI,
     functionName: 'getOpenInterest',
-    args: [INDEX_TOKEN],
+    args: [indexToken],
     query: { refetchInterval: 15_000 },
   });
 

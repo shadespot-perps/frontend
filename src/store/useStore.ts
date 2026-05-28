@@ -22,6 +22,8 @@ export interface Position {
   liquidationPrice: number;
   status: PositionStatus;
   openedAt: string;
+  /** Chain block when PositionOpened was emitted (for sorting / debugging). */
+  openedBlockNumber?: number;
 }
 
 export interface Order {

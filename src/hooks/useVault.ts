@@ -4,14 +4,18 @@ import {
   useReadContract,
   useWriteContract,
   usePublicClient,
+  useChainId,
 } from 'wagmi';
 import { parseUnits, parseAbiItem, type WriteContractParameters } from 'viem';
 import { Encryptable } from '@cofhe/sdk';
 import {
-  CONTRACTS, TOKEN_DECIMALS,
-  FHE_ROUTER_ABI, FHE_TOKEN_ABI, VAULT_EVENTS_ABI,
+  getContracts, TOKEN_DECIMALS,
+  FHE_ROUTER_ABI, FHE_TOKEN_ABI, FHE_VAULT_ABI, VAULT_EVENTS_ABI,
 } from '@/lib/contracts';
+import type { CollateralMode } from '@/lib/composability';
 import { decryptForTxWithRetry, encryptInputsOnChain, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
+import { useApproveUnderlying } from '@/hooks/useApproveUnderlying';
+import { useUnderlyingTokenMeta } from '@/hooks/useUnderlyingToken';
 
 // Manual gas override removed to let Viem natively negotiate Arbitrum L2 fees
 
@@ -29,6 +33,7 @@ export function useTokenBalance() {
 export type VaultTxStatus =
   | 'idle'
   | 'setting_operator'
+  | 'approving_underlying'
   | 'encrypting'
   | 'submitting'
   | 'submitting_check'   // phase-1 submitWithdrawCheck tx in wallet
@@ -36,17 +41,21 @@ export type VaultTxStatus =
   | 'confirmed'
   | 'error';
 
+export type { CollateralMode };
+
 export function useAddLiquidity() {
   const [status, setStatus] = useState<VaultTxStatus>('idle');
   const [error, setError]   = useState<string | null>(null);
 
   const { address } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
 
   const { data: isOperatorRaw, refetch: refetchOperator } = useReadContract({
-    address: CONTRACTS.fheToken,
+    address: contracts.fheToken,
     abi: FHE_TOKEN_ABI,
     functionName: 'isOperator',
-    args: [address!, CONTRACTS.router],
+    args: [address!, contracts.router],
     query: { enabled: !!address },
   });
 
@@ -63,21 +72,21 @@ export function useAddLiquidity() {
         setStatus('setting_operator');
         const oneYear = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
         await write({
-          address: CONTRACTS.fheToken,
+          address: contracts.fheToken,
           abi: FHE_TOKEN_ABI,
           functionName: 'setOperator',
-          args: [CONTRACTS.router, oneYear],
+          args: [contracts.router, oneYear],
         });
         await refetchOperator();
       }
 
       setStatus('encrypting');
-      const [encAmount] = await encryptInputsOnChain([Encryptable.uint64(amountWei)]);
+      const [encAmount] = await encryptInputsOnChain(chainId, [Encryptable.uint64(amountWei)]);
 
       setStatus('submitting');
       const fees = await publicClient!.estimateFeesPerGas();
       await write({
-        address: CONTRACTS.router,
+        address: contracts.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'addLiquidity',
         args: [normaliseEnc(encAmount)],
@@ -96,11 +105,64 @@ export function useAddLiquidity() {
       );
       setStatus('error');
     }
-  }, [address, isOperatorRaw, write, refetchOperator, publicClient]);
+  }, [address, isOperatorRaw, write, refetchOperator, publicClient, contracts]);
 
   const reset = useCallback(() => { setStatus('idle'); setError(null); }, []);
 
   return { execute, status, error, reset, isOperatorSet: !!isOperatorRaw };
+}
+
+/** Deposit plain underlying — vault wraps into encrypted and mints LP shares. */
+export function useAddLiquidityPlain() {
+  const [status, setStatus] = useState<VaultTxStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const { address } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const underlying = useUnderlyingTokenMeta();
+  const { approve, hasEnoughAllowance } = useApproveUnderlying();
+  const publicClient = usePublicClient();
+  const { writeContractAsync: write } = useWriteContract();
+
+  const execute = useCallback(
+    async (amountStr: string) => {
+      if (!address) return;
+      setError(null);
+      try {
+        if (!underlying.configured) {
+          throw new Error('Underlying token not configured on vault/router');
+        }
+        const amountWei = parseUnits(amountStr, underlying.decimals);
+        if (!hasEnoughAllowance(amountWei)) {
+          setStatus('approving_underlying');
+          await approve(amountWei);
+        }
+        setStatus('submitting');
+        const fees = await publicClient!.estimateFeesPerGas();
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'addLiquidityPlain',
+          args: [amountWei],
+          gas: 1_500_000n,
+          maxFeePerGas: fees.maxFeePerGas,
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+        });
+        setStatus('confirmed');
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Transaction failed');
+        setStatus('error');
+      }
+    },
+    [address, approve, hasEnoughAllowance, publicClient, underlying.configured, underlying.decimals, write, contracts.router],
+  );
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setError(null);
+  }, []);
+
+  return { execute, status, error, reset, underlying };
 }
 
 export function useRemoveLiquidity() {
@@ -108,10 +170,15 @@ export function useRemoveLiquidity() {
   const [error, setError]   = useState<string | null>(null);
 
   const { address } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
   const publicClient               = usePublicClient();
   const { writeContractAsync: write } = useWriteContract();
 
-  const execute = useCallback(async (sharesStr: string) => {
+  const execute = useCallback(async (
+    sharesStr: string,
+    withdrawMode: CollateralMode = 'encrypted',
+  ) => {
     if (!address) return;
     setError(null);
     try {
@@ -123,7 +190,7 @@ export function useRemoveLiquidity() {
       // Phase 1: submit withdraw check on-chain
       setStatus('submitting_check');
       const phase1Hash = await write({
-        address: CONTRACTS.router,
+        address: contracts.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'submitWithdrawCheck',
         args: [shares],
@@ -140,7 +207,7 @@ export function useRemoveLiquidity() {
       });
 
       const withdrawLogs = await publicClient!.getLogs({
-        address: CONTRACTS.vault as `0x${string}`,
+        address: contracts.vault as `0x${string}`,
         event: parseAbiItem(
           'event WithdrawCheckSubmitted(address indexed lp, bytes32 hasBalHandle, bytes32 hasLiqHandle, uint256 shares)'
         ),
@@ -154,16 +221,16 @@ export function useRemoveLiquidity() {
         throw new Error('WithdrawCheckSubmitted event not found');
       }
 
-      // Off-chain decrypt both handles via CoFHE Threshold Network.
-      // FHEVault calls FHE.allow(hasBal/hasLiq, lp) so the LP's self-permit is sufficient.
       const [balResult, liqResult] = await Promise.all([
         decryptForTxWithRetry(BigInt(logArgs.hasBalHandle), {
+          chainId,
           label: 'withdraw.hasBal',
           retries: 15,
           delayMs: 5000,
           tryWithoutPermitFallback: true,
         }),
         decryptForTxWithRetry(BigInt(logArgs.hasLiqHandle), {
+          chainId,
           label: 'withdraw.hasLiq',
           retries: 15,
           delayMs: 5000,
@@ -172,27 +239,56 @@ export function useRemoveLiquidity() {
       ]);
 
       const balPlain = balResult.decryptedValue !== 0n;
-      const balSig   = toHexSig(balResult.signature);
+      const balSig = toHexSig(balResult.signature);
       const liqPlain = liqResult.decryptedValue !== 0n;
-      const liqSig   = toHexSig(liqResult.signature);
+      const liqSig = toHexSig(liqResult.signature);
 
-      // Phase 2: finalise withdrawal with proofs
       setStatus('submitting');
-      await write({
-        address: CONTRACTS.router,
-        abi: FHE_ROUTER_ABI,
-        functionName: 'removeLiquidity',
-        args: [shares, balPlain, balSig, liqPlain, liqSig],
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-      });
+
+      if (withdrawMode === 'wrap') {
+        const pending = await publicClient!.readContract({
+          address: contracts.vault as `0x${string}`,
+          abi: FHE_VAULT_ABI,
+          functionName: 'pendingWithdraw',
+          args: [address],
+        });
+        const pendingArr = pending as readonly [unknown, unknown, unknown, unknown];
+        const amountHandle = pendingArr[2] as `0x${string}`;
+        const amountResult = await decryptForTxWithRetry(BigInt(amountHandle), {
+          chainId,
+          label: 'withdraw.amount',
+          retries: 15,
+          delayMs: 5000,
+          tryWithoutPermitFallback: true,
+        });
+        const amountPlain = Number(amountResult.decryptedValue);
+        const amountSig = toHexSig(amountResult.signature);
+
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'finalizeLiquidityWithdrawalPlain',
+          args: [shares, balPlain, balSig, liqPlain, liqSig, amountPlain, amountSig],
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        });
+      } else {
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'removeLiquidity',
+          args: [shares, balPlain, balSig, liqPlain, liqSig],
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        });
+      }
 
       setStatus('confirmed');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Transaction failed');
       setStatus('error');
     }
-  }, [address, write, publicClient]);
+  }, [address, write, publicClient, contracts]);
 
   const reset = useCallback(() => { setStatus('idle'); setError(null); }, []);
 

@@ -1,31 +1,59 @@
 import { useState, useCallback } from 'react';
+import { useStore } from '@/store/useStore';
 import {
   useWriteContract,
   useReadContract,
   usePublicClient,
   useAccount,
+  useChainId,
 } from 'wagmi';
-import { parseUnits, parseAbiItem, decodeEventLog, type WriteContractParameters } from 'viem';
+import { formatUnits, parseUnits, parseAbiItem, decodeEventLog } from 'viem';
 import { Encryptable } from '@cofhe/sdk';
 import {
-  CONTRACTS, INDEX_TOKEN, TOKEN_DECIMALS,
-  FHE_ROUTER_ABI, FHE_TOKEN_ABI,
-  PRICE_ORACLE_ABI, VAULT_EVENTS_ABI,
+  getContracts, getFromBlock, getIndexToken, TOKEN_DECIMALS,
+  FHE_ROUTER_ABI, FHE_ROUTER_READ_ABI, FHE_TOKEN_ABI, FHE_VAULT_ABI,
+  PRICE_ORACLE_ABI,
   POSITION_MANAGER_ABI,
 } from '@/lib/contracts';
+import { assertUint64Amount, UINT64_MAX, type CollateralMode } from '@/lib/composability';
+import { waitForPlainPayoutSettled, type ClosePayoutMode } from '@/lib/closePayout';
+import { resolveOpenLiquidityProof } from '@/lib/tradeLiquidity';
 import { decryptForTxWithRetry, encryptInputsOnChain, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
+import { useApproveUnderlying } from '@/hooks/useApproveUnderlying';
+import { formatWalletError } from '@/lib/walletErrors';
+import {
+  useUnderlyingTokenMeta,
+  useWrapUnderlyingAllowance,
+  useWrapUnderlyingBalance,
+} from '@/hooks/useUnderlyingToken';
 
 // Manual gas override removed to let Viem natively negotiate Arbitrum L2 fees
 
 export type TradeStatus =
   | 'idle'
   | 'setting_operator'
+  | 'approving_underlying'
   | 'encrypting'          // FHE proof generation
   | 'submitting'          // tx in wallet
   | 'fhe_decrypt_sent'    // phase-1 confirmed, waiting for CoFHE TN decrypt
   | 'awaiting_decrypt'    // waiting for CoFHE TN decrypt during close finalization
   | 'confirmed'
   | 'error';
+
+export type { CollateralMode };
+
+/** User-visible steps for the two-phase close (request → TN decrypt → finalize). */
+export type CloseStep = 'idle' | 'request' | 'decrypt' | 'finalize' | 'keeper' | 'done';
+
+export const CLOSE_STEP_LABELS: Record<Exclude<CloseStep, 'idle'>, string> = {
+  request: 'Step 1/3: Requesting close on-chain…',
+  decrypt: 'Step 2/3: Decrypting settlement (CoFHE)…',
+  finalize: 'Step 3/3: Publishing settlement on-chain…',
+  keeper: 'Step 3/3: Waiting for plain payout settlement…',
+  done: 'Position closed',
+};
+
+export type { ClosePayoutMode };
 
 /**
  * Open-position flow (FHE):
@@ -39,17 +67,23 @@ export function useOpenPosition() {
   const [error, setError]   = useState<string | null>(null);
 
   const { address: walletAddress } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const fromBlockDefault = getFromBlock(chainId);
+  const indexToken = getIndexToken(chainId);
 
   const { data: isOperatorRaw, refetch: refetchOperator } = useReadContract({
-    address: CONTRACTS.fheToken,
+    address: contracts.fheToken,
     abi: FHE_TOKEN_ABI,
     functionName: 'isOperator',
-    args: [walletAddress!, CONTRACTS.router],
+    args: [walletAddress!, contracts.router],
     query: { enabled: !!walletAddress },
   });
 
   const publicClient               = usePublicClient();
   const { writeContractAsync: write } = useWriteContract();
+  const { approve: approveUnderlying, hasEnoughAllowance } = useApproveUnderlying();
+  const underlyingMeta = useUnderlyingTokenMeta();
 
   const execute = useCallback(async (params: {
     collateral: number;
@@ -57,6 +91,7 @@ export function useOpenPosition() {
     isLong: boolean;
     orderType: 'market' | 'limit' | 'stop';
     triggerPrice?: number;
+    collateralMode?: CollateralMode;
   }) => {
     if (!walletAddress) return;
     setError(null);
@@ -69,10 +104,10 @@ export function useOpenPosition() {
         const oneYear = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
         const fees = await publicClient!.estimateFeesPerGas();
         await write({
-          address: CONTRACTS.fheToken,
+          address: contracts.fheToken,
           abi: FHE_TOKEN_ABI,
           functionName: 'setOperator',
-          args: [CONTRACTS.router, oneYear],
+          args: [contracts.router, oneYear],
           gas: 100_000n,  // simple storage write — bypass broken MetaMask CoFHE sim
           maxFeePerGas: fees.maxFeePerGas,
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
@@ -81,13 +116,26 @@ export function useOpenPosition() {
       }
 
       const collateralWei = parseUnits(params.collateral.toString(), TOKEN_DECIMALS);
+      const collateralMode = params.collateralMode ?? 'encrypted';
+
+      if (collateralMode === 'wrap') {
+        if (params.orderType !== 'market') {
+          throw new Error('Wrap-from-underlying is only supported for market orders');
+        }
+        if (!underlyingMeta.wrapConfigured) {
+          throw new Error(
+            'Plain wrap is not enabled on this network — vault/router underlyingToken is unset. ' +
+              'Use encrypted collateral (mint FHE token on /dev/faucet) or call vault.setUnderlyingToken after deploying a plain ERC-20.',
+          );
+        }
+      }
 
       // ── 2. Limit / stop order ───────────────────────────────────
       if (params.orderType !== 'market') {
         if (!params.triggerPrice) throw new Error('triggerPrice required for limit/stop orders');
 
         setStatus('encrypting');
-        const [eCollateral, eLeverage, eTriggerPrice, eIsLong] = await encryptInputsOnChain([
+        const [eCollateral, eLeverage, eTriggerPrice, eIsLong] = await encryptInputsOnChain(chainId, [
           Encryptable.uint64(collateralWei),
           Encryptable.uint64(BigInt(params.leverage)),
           // Oracle prices are 8 decimals on-chain; triggerPrice must use same scale.
@@ -98,11 +146,11 @@ export function useOpenPosition() {
         setStatus('submitting');
         const fees = await publicClient!.estimateFeesPerGas();
         await write({
-          address: CONTRACTS.router,
+          address: contracts.router,
           abi: FHE_ROUTER_ABI,
           functionName: 'createEncryptedOrder',
           args: [
-            INDEX_TOKEN,
+            indexToken,
             normaliseEnc(eCollateral),
             normaliseEnc(eLeverage),
             normaliseEnc(eTriggerPrice),
@@ -118,153 +166,116 @@ export function useOpenPosition() {
         return;
       }
 
-      // ── 3. Market order — two-phase FHE open ────────────────────
-      setStatus('encrypting');
-      // Encrypt all three inputs in one ZKPoK batch.
-      const [eCollateral, eLeverage, eIsLong] = await encryptInputsOnChain([
-        Encryptable.uint64(collateralWei),
-        Encryptable.uint64(BigInt(params.leverage)),
-        Encryptable.bool(params.isLong),
-      ]);
-
-      // Normalise signatures for viem tuple encoding.
-      const encC = normaliseEnc(eCollateral);
-      const encL = normaliseEnc(eLeverage);
-      const encI = normaliseEnc(eIsLong);
-
-      // Phase 1: submit FHE liquidity check task
-      setStatus('submitting');
-      const phase1Fees = await publicClient!.estimateFeesPerGas();
-      const phase1Hash = await write({
-        address: CONTRACTS.router,
-        abi: FHE_ROUTER_ABI,
-        functionName: 'submitOpenPositionCheck',
-        args: [INDEX_TOKEN, encC, encL, encI],
-        gas: 2_500_000n,
-        maxFeePerGas: phase1Fees.maxFeePerGas,
-        maxPriorityFeePerGas: phase1Fees.maxPriorityFeePerGas,
-      });
-
-      setStatus('fhe_decrypt_sent');
-
-      // Wait for phase-1 receipt, then read hasLiq handle directly from vault state.
-      // This is more robust than relying on immediate event indexing.
-      const receipt = await publicClient!.waitForTransactionReceipt({
-        hash: phase1Hash,
-        timeout: 120_000,
-      });
-      const traderForCheck = (receipt.from ?? walletAddress) as `0x${string}`;
-      const ZERO_HANDLE = '0x0000000000000000000000000000000000000000000000000000000000000000';
-      let hasLiqHandle: `0x${string}` | undefined;
-
-      // Primary source: decode hasLiq handle from the mined tx receipt logs.
-      // This avoids any ambiguity around mapping keys and RPC log indexing delays.
-      for (const log of receipt.logs) {
-        if (log.address.toLowerCase() !== CONTRACTS.vault.toLowerCase()) continue;
-        try {
-          const decoded = decodeEventLog({
-            abi: [parseAbiItem('event ReserveLiquidityCheckSubmitted(address indexed trader, bytes32 hasLiqHandle, bytes32 sizeHandle)')],
-            data: log.data,
-            topics: log.topics,
-          });
-          if (decoded.eventName === 'ReserveLiquidityCheckSubmitted') {
-            hasLiqHandle = decoded.args.hasLiqHandle as `0x${string}`;
-          }
-        } catch {
-          // ignore non-matching logs
+      // ── 3. Market order — two-phase open ────────────────────────
+      if (collateralMode === 'wrap') {
+        if (!hasEnoughAllowance(collateralWei)) {
+          setStatus('approving_underlying');
+          await approveUnderlying(collateralWei);
         }
-      }
 
-      const readPendingHandle = async (trader: `0x${string}`): Promise<`0x${string}` | undefined> => {
-        const pending = await publicClient!.readContract({
-          address: CONTRACTS.vault as `0x${string}`,
-          abi: [
-            {
-              type: 'function',
-              name: 'pendingLiqCheck',
-              stateMutability: 'view',
-              inputs: [{ name: 'trader', type: 'address' }],
-              outputs: [
-                { name: 'hasLiq', type: 'bytes32' },
-                { name: 'eSize', type: 'bytes32' },
-              ],
-            },
-          ] as const,
-          functionName: 'pendingLiqCheck',
-          args: [trader],
+        setStatus('encrypting');
+        const plainCollateral = Number(assertUint64Amount(collateralWei));
+        const [eLeverage, eIsLong] = await encryptInputsOnChain(chainId, [
+          Encryptable.uint64(BigInt(params.leverage)),
+          Encryptable.bool(params.isLong),
+        ]);
+        const encL = normaliseEnc(eLeverage);
+        const encI = normaliseEnc(eIsLong);
+
+        setStatus('submitting');
+        const phase1Fees = await publicClient!.estimateFeesPerGas();
+        const phase1Hash = await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'submitOpenPositionCheckPlain',
+          args: [indexToken, plainCollateral, encL, encI],
+          gas: 2_500_000n,
+          maxFeePerGas: phase1Fees.maxFeePerGas,
+          maxPriorityFeePerGas: phase1Fees.maxPriorityFeePerGas,
         });
 
-        if (Array.isArray(pending)) return pending[0] as `0x${string}`;
-        if (pending && typeof pending === 'object' && 'hasLiq' in pending) {
-          return (pending as { hasLiq: `0x${string}` }).hasLiq;
-        }
-        return undefined;
-      };
+        setStatus('fhe_decrypt_sent');
+        const { hasLiqPlain, hasLiqSig } = await resolveOpenLiquidityProof(
+          publicClient!,
+          chainId,
+          contracts,
+          walletAddress as `0x${string}`,
+          phase1Hash,
+        );
 
-      // Some RPCs can lag right after receipt; poll briefly before failing.
-      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      for (let i = 0; i < 8 && (!hasLiqHandle || hasLiqHandle === ZERO_HANDLE); i++) {
-        hasLiqHandle = await readPendingHandle(traderForCheck);
-        if ((!hasLiqHandle || hasLiqHandle === ZERO_HANDLE) && walletAddress) {
-          hasLiqHandle = await readPendingHandle(walletAddress as `0x${string}`);
-        }
-        if (!hasLiqHandle || hasLiqHandle === ZERO_HANDLE) {
-          await sleep(1000);
-        }
-      }
-
-      // Fallback to event lookup if tuple decoding format differs by client/provider.
-      if (!hasLiqHandle || hasLiqHandle === ZERO_HANDLE) {
-        // Last-chance scan up to latest in case indexer lagged at receipt block.
-        const liqLogs = await publicClient!.getLogs({
-          address: CONTRACTS.vault as `0x${string}`,
-          event: parseAbiItem(
-            'event ReserveLiquidityCheckSubmitted(address indexed trader, bytes32 hasLiqHandle, bytes32 sizeHandle)'
-          ),
-          args: { trader: traderForCheck },
-          fromBlock: receipt.blockNumber > 5_000n ? receipt.blockNumber - 5_000n : 0n,
-          toBlock: 'latest',
+        setStatus('submitting');
+        const phase2Fees = await publicClient!.estimateFeesPerGas();
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'finalizeOpenPositionPlain',
+          args: [indexToken, plainCollateral, encL, encI, hasLiqPlain, hasLiqSig],
+          gas: 3_000_000n,
+          maxFeePerGas: phase2Fees.maxFeePerGas,
+          maxPriorityFeePerGas: phase2Fees.maxPriorityFeePerGas,
         });
-        hasLiqHandle = liqLogs[liqLogs.length - 1]?.args?.hasLiqHandle as `0x${string}` | undefined;
+      } else {
+        setStatus('encrypting');
+        const [eCollateral, eLeverage, eIsLong] = await encryptInputsOnChain(chainId, [
+          Encryptable.uint64(collateralWei),
+          Encryptable.uint64(BigInt(params.leverage)),
+          Encryptable.bool(params.isLong),
+        ]);
+
+        const encC = normaliseEnc(eCollateral);
+        const encL = normaliseEnc(eLeverage);
+        const encI = normaliseEnc(eIsLong);
+
+        setStatus('submitting');
+        const phase1Fees = await publicClient!.estimateFeesPerGas();
+        const phase1Hash = await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'submitOpenPositionCheck',
+          args: [indexToken, encC, encL, encI],
+          gas: 2_500_000n,
+          maxFeePerGas: phase1Fees.maxFeePerGas,
+          maxPriorityFeePerGas: phase1Fees.maxPriorityFeePerGas,
+        });
+
+        setStatus('fhe_decrypt_sent');
+        const { hasLiqPlain, hasLiqSig } = await resolveOpenLiquidityProof(
+          publicClient!,
+          chainId,
+          contracts,
+          walletAddress as `0x${string}`,
+          phase1Hash,
+        );
+
+        setStatus('submitting');
+        const phase2Fees = await publicClient!.estimateFeesPerGas();
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'finalizeOpenPosition',
+          args: [indexToken, encC, encL, encI, hasLiqPlain, hasLiqSig],
+          gas: 3_000_000n,
+          maxFeePerGas: phase2Fees.maxFeePerGas,
+          maxPriorityFeePerGas: phase2Fees.maxPriorityFeePerGas,
+        });
       }
-
-      if (!hasLiqHandle || hasLiqHandle === ZERO_HANDLE) {
-        throw new Error('pendingLiqCheck has no hasLiq handle after submitOpenPositionCheck');
-      }
-
-      // Off-chain decrypt via CoFHE Threshold Network.
-      // FHEVault calls FHE.allow(hasLiq, trader) so the trader's self-permit is sufficient.
-      const decryptResult = await decryptForTxWithRetry(BigInt(hasLiqHandle), {
-        label: 'open.hasLiq',
-        retries: 15,
-        delayMs: 5000,
-        tryWithoutPermitFallback: true,
-      });
-
-      const hasLiqPlain = decryptResult.decryptedValue !== 0n;
-      const hasLiqSig   = toHexSig(decryptResult.signature);
-
-      // Phase 2: open position with proof
-      setStatus('submitting');
-      const phase2Fees = await publicClient!.estimateFeesPerGas();
-      await write({
-        address: CONTRACTS.router,
-        abi: FHE_ROUTER_ABI,
-        functionName: 'finalizeOpenPosition',
-        // Re-use the SAME ciphertexts (same ctHash) from phase 1.
-        args: [INDEX_TOKEN, encC, encL, encI, hasLiqPlain, hasLiqSig],
-        gas: 3_000_000n,
-        maxFeePerGas: phase2Fees.maxFeePerGas,
-        maxPriorityFeePerGas: phase2Fees.maxPriorityFeePerGas,
-      });
 
       setStatus('confirmed');
 
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Transaction failed');
+      setError(formatWalletError(err));
       setStatus('error');
     }
-  }, [walletAddress, isOperatorRaw, write, refetchOperator, publicClient]);
+  }, [
+    walletAddress,
+    isOperatorRaw,
+    write,
+    refetchOperator,
+    publicClient,
+    approveUnderlying,
+    hasEnoughAllowance,
+    underlyingMeta.configured,
+  ]);
 
   const reset = useCallback(() => { setStatus('idle'); setError(null); }, []);
 
@@ -278,24 +289,45 @@ export function useOpenPosition() {
  */
 export function useClosePosition() {
   const [status, setStatus] = useState<TradeStatus>('idle');
+  const [closeStep, setCloseStep] = useState<CloseStep>('idle');
   const [error, setError]   = useState<string | null>(null);
 
   const publicClient               = usePublicClient();
   const { writeContractAsync: write } = useWriteContract();
   const { address: walletAddress } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const indexToken = getIndexToken(chainId);
+  const fromBlockDefault = getFromBlock(chainId);
 
-  const execute = useCallback(async (positionKey: `0x${string}`) => {
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setCloseStep('idle');
     setError(null);
+  }, []);
+
+  const execute = useCallback(async (
+    positionKey: `0x${string}`,
+    options?: { payout?: ClosePayoutMode; isLong?: boolean },
+  ) => {
+    setError(null);
+    setCloseStep('request');
+    const payout = options?.payout ?? 'encrypted';
+
     try {
       if (!walletAddress) throw new Error('Wallet not connected');
-      if (!isCofheReady()) throw new Error('CoFHE client not ready — wallet still connecting, please try again in a moment');
+
+      // Plain payout step 3 is done by router owner / backend keeper — no wallet decrypt required.
+      if (payout === 'encrypted' && !isCofheReady()) {
+        throw new Error('CoFHE client not ready — wallet still connecting, please try again in a moment');
+      }
 
       // PriceOracle.getPrice() reverts if price is stale; catch it here with a friendlier error.
       const priceData = await publicClient!.readContract({
-        address: CONTRACTS.priceOracle,
+        address: contracts.priceOracle,
         abi: PRICE_ORACLE_ABI,
         functionName: 'getPriceData',
-        args: [INDEX_TOKEN],
+        args: [indexToken],
       }) as [bigint, bigint];
       const [price, lastUpdated] = priceData;
       if (price === 0n) throw new Error('Oracle price not set — run `npm run update-price` in `shadespot/sdk`');
@@ -307,7 +339,7 @@ export function useClosePosition() {
 
       // Quick sanity check: prevent burning gas on an invalid key.
       const exists = await publicClient!.readContract({
-        address: CONTRACTS.positionManager,
+        address: contracts.positionManager,
         abi: POSITION_MANAGER_ABI,
         functionName: 'positionExists',
         args: [positionKey],
@@ -316,28 +348,69 @@ export function useClosePosition() {
         throw new Error(`Position does not exist for key ${positionKey} (likely wrong key was passed)`);
       }
 
+      if (payout === 'plain') {
+        const reserve = await publicClient!.readContract({
+          address: contracts.vault,
+          abi: FHE_VAULT_ABI,
+          functionName: 'plainUnderlyingReserve',
+        }) as bigint;
+        if (reserve === 0n) {
+          throw new Error(
+            'Vault has no plain underlying reserve for USDC payout. Deposit plain LP on Earn or open with wrap-USDC collateral first.',
+          );
+        }
+      }
+
       // Phase 1: request close (on-chain)
       setStatus('submitting');
       const fees1 = await publicClient!.estimateFeesPerGas();
+      const requestFn =
+        options?.payout === 'plain' ? 'requestClosePlainPayout' : 'requestClosePosition';
+
       const phase1Hash = await write({
-        address: CONTRACTS.router,
+        address: contracts.router,
         abi: FHE_ROUTER_ABI,
-        functionName: 'requestClosePosition',
+        functionName: requestFn,
         args: [positionKey],
         gas: 3_000_000n,
         maxFeePerGas: fees1.maxFeePerGas,
         maxPriorityFeePerGas: fees1.maxPriorityFeePerGas,
       });
 
-      setStatus('awaiting_decrypt');
-
       const receipt = await publicClient!.waitForTransactionReceipt({
         hash: phase1Hash,
         timeout: 120_000,
       });
 
+      const routerOwner = await publicClient!.readContract({
+        address: contracts.router,
+        abi: FHE_ROUTER_READ_ABI,
+        functionName: 'owner',
+      }) as `0x${string}`;
+      const canFinalizePlain =
+        payout === 'plain' &&
+        walletAddress.toLowerCase() === routerOwner.toLowerCase();
+
+      // Plain close for normal wallets: keeper decrypts + finalizeClosePlainPayout (router owner only).
+      if (payout === 'plain' && !canFinalizePlain) {
+        setCloseStep('keeper');
+        setStatus('awaiting_decrypt');
+        await waitForPlainPayoutSettled(publicClient!, contracts, positionKey, {
+          fromBlock: receipt.blockNumber,
+        });
+        useStore.getState().setPositions(
+          useStore.getState().positions.filter((p) => p.positionKey !== positionKey),
+        );
+        setCloseStep('done');
+        setStatus('confirmed');
+        return;
+      }
+
+      setCloseStep('decrypt');
+      setStatus('awaiting_decrypt');
+
       // Extract CloseRequested handles from receipt logs (PositionManager emits it).
-      const pmAddr = CONTRACTS.positionManager.toLowerCase();
+      const pmAddr = contracts.positionManager.toLowerCase();
       type CloseRequestedEvent = {
         args: {
           positionKey: `0x${string}`;
@@ -372,15 +445,14 @@ export function useClosePosition() {
 
       // Find collateral handle from PositionOpened (emitted when the position was opened).
       // We scan a recent window to keep RPC load reasonable.
-      const fromBlock = receipt.blockNumber > 10_000n ? receipt.blockNumber - 10_000n : 0n;
       const openedLogs = await publicClient!.getLogs({
-        address: CONTRACTS.positionManager as `0x${string}`,
+        address: contracts.positionManager as `0x${string}`,
         event: parseAbiItem(
           'event PositionOpened(bytes32 indexed positionKey, address indexed trader, bytes32 sizeHandle, bytes32 collateralHandle, bytes32 isLongHandle)'
         ),
-        args: { positionKey, trader: walletAddress as `0x${string}` },
-        fromBlock,
-        toBlock: 'latest',
+        args: { positionKey },
+        fromBlock: fromBlockDefault,
+        toBlock: receipt.blockNumber,
       });
 
       const collateralHandle = openedLogs[openedLogs.length - 1]?.args?.collateralHandle as `0x${string}` | undefined;
@@ -390,41 +462,68 @@ export function useClosePosition() {
 
       // Off-chain decrypt with CoFHE TN (signatures used for publishDecryptResult on-chain).
       const [finalAmount, size, collateral] = await Promise.all([
-        decryptForTxWithRetry(BigInt(finalAmountHandle), { label: 'close.finalAmount', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
-        decryptForTxWithRetry(BigInt(sizeHandle), { label: 'close.size', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
-        decryptForTxWithRetry(BigInt(collateralHandle), { label: 'close.collateral', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
+        decryptForTxWithRetry(BigInt(finalAmountHandle), { chainId, label: 'close.finalAmount', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
+        decryptForTxWithRetry(BigInt(sizeHandle), { chainId, label: 'close.size', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
+        decryptForTxWithRetry(BigInt(collateralHandle), { chainId, label: 'close.collateral', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
       ]);
 
-      // Phase 2: finalize close (on-chain)
+      const isLongPlain = options?.isLong ?? false;
+      const finalizeArgs = [
+        positionKey,
+        finalAmount.decryptedValue,
+        toHexSig(finalAmount.signature),
+        size.decryptedValue,
+        toHexSig(size.signature),
+        collateral.decryptedValue,
+        toHexSig(collateral.signature),
+        isLongPlain,
+      ] as const;
+
+      setCloseStep('finalize');
       setStatus('submitting');
       const fees2 = await publicClient!.estimateFeesPerGas();
-      await write({
-        address: CONTRACTS.positionManager,
-        abi: POSITION_MANAGER_ABI,
-        functionName: 'finalizeClosePosition',
-        args: [
-          positionKey,
-          finalAmount.decryptedValue,
-          toHexSig(finalAmount.signature),
-          size.decryptedValue,
-          toHexSig(size.signature),
-          collateral.decryptedValue,
-          toHexSig(collateral.signature),
-          false,
-        ],
-        gas: 3_000_000n,
-        maxFeePerGas: fees2.maxFeePerGas,
-        maxPriorityFeePerGas: fees2.maxPriorityFeePerGas,
-      });
 
+      if (payout === 'plain') {
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'finalizeClosePlainPayout',
+          args: [...finalizeArgs],
+          gas: 3_000_000n,
+          maxFeePerGas: fees2.maxFeePerGas,
+          maxPriorityFeePerGas: fees2.maxPriorityFeePerGas,
+        });
+      } else {
+        await write({
+          address: contracts.positionManager,
+          abi: POSITION_MANAGER_ABI,
+          functionName: 'finalizeClosePosition',
+          args: [...finalizeArgs],
+          gas: 3_000_000n,
+          maxFeePerGas: fees2.maxFeePerGas,
+          maxPriorityFeePerGas: fees2.maxPriorityFeePerGas,
+        });
+      }
+
+      useStore.getState().setPositions(
+        useStore.getState().positions.filter((p) => p.positionKey !== positionKey),
+      );
+      setCloseStep('done');
       setStatus('confirmed');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Transaction failed');
+      setError(formatWalletError(err));
       setStatus('error');
+      setCloseStep('idle');
     }
-  }, [write, publicClient, walletAddress]);
+  }, [write, publicClient, walletAddress, contracts, indexToken, fromBlockDefault]);
 
-  return { execute, status, error };
+  const isClosing =
+    closeStep === 'request' ||
+    closeStep === 'decrypt' ||
+    closeStep === 'finalize' ||
+    closeStep === 'keeper';
+
+  return { execute, status, closeStep, isClosing, error, reset };
 }
 
 /** Cancel a pending limit/stop order (no fee required). */
@@ -434,6 +533,8 @@ export function useCancelOrder() {
 
   const publicClient               = usePublicClient();
   const { writeContractAsync: write } = useWriteContract();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
 
   const execute = useCallback(async (orderId: number) => {
     setError(null);
@@ -441,7 +542,7 @@ export function useCancelOrder() {
       setStatus('submitting');
       const fees = await publicClient!.estimateFeesPerGas();
       await write({
-        address: CONTRACTS.router,
+        address: contracts.router,
         abi: FHE_ROUTER_ABI,
         functionName: 'cancelOrder',
         args: [BigInt(orderId)],
@@ -451,22 +552,34 @@ export function useCancelOrder() {
       });
       setStatus('confirmed');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Transaction failed');
+      setError(formatWalletError(err));
       setStatus('error');
     }
-  }, [write, publicClient]);
+  }, [write, publicClient, contracts.router]);
 
   return { execute, status, error };
 }
 
 const ORACLE_STALE_SECONDS = 300;
 
-export function useTradePrecheck(collateralUsd: number, leverage: number) {
+export function useTradePrecheck(
+  collateralUsd: number,
+  leverage: number,
+  collateralMode: CollateralMode = 'encrypted',
+  orderType: 'market' | 'limit' | 'stop' = 'market',
+) {
+  const underlying = useUnderlyingTokenMeta();
+  const { balance: underlyingBalance } = useWrapUnderlyingBalance();
+  const { allowance } = useWrapUnderlyingAllowance();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const indexToken = getIndexToken(chainId);
+
   const { data: priceData } = useReadContract({
-    address: CONTRACTS.priceOracle,
+    address: contracts.priceOracle,
     abi: PRICE_ORACLE_ABI,
     functionName: 'getPriceData',
-    args: [INDEX_TOKEN],
+    args: [indexToken],
     query: { refetchInterval: 10_000 },
   });
 
@@ -479,12 +592,45 @@ export function useTradePrecheck(collateralUsd: number, leverage: number) {
 
   const requiredLiq = collateralUsd * leverage;
 
+  const collateralWei =
+    collateralUsd > 0 ? parseUnits(collateralUsd.toString(), TOKEN_DECIMALS) : 0n;
+
   const warnings: string[] = [];
   if (oracleNeverSet) {
     warnings.push('Oracle price not set.');
   } else if (oracleStale) {
     warnings.push(`Oracle price is stale (${priceAge}s old, max ${ORACLE_STALE_SECONDS}s).`);
   }
+
+    if (collateralMode === 'wrap') {
+    if (orderType !== 'market') {
+      warnings.push('Wrap-from-underlying only supports market orders.');
+    }
+    if (!underlying.wrapConfigured) {
+      warnings.push(
+        'Wrap not available on this chain — set vault.setUnderlyingToken on deploy, or use encrypted collateral.',
+      );
+    } else if (collateralUsd > 0) {
+      if (collateralWei > UINT64_MAX) {
+        warnings.push('Collateral too large for uint64 wrap path.');
+      }
+      if (underlyingBalance !== undefined && underlyingBalance < collateralWei) {
+        warnings.push(
+          `Insufficient ${underlying.symbol} balance (need ${formatUnits(collateralWei, underlying.decimals)}).`,
+        );
+      }
+      if (allowance !== undefined && allowance < collateralWei) {
+        warnings.push(`Approve ${underlying.symbol} for the router (included in submit flow).`);
+      }
+    }
+  }
+
+  const wrapOk =
+    collateralMode !== 'wrap' ||
+    (underlying.wrapConfigured &&
+      orderType === 'market' &&
+      collateralWei <= UINT64_MAX &&
+      (underlyingBalance === undefined || underlyingBalance >= collateralWei));
 
   return {
     oracleOk,
@@ -494,7 +640,9 @@ export function useTradePrecheck(collateralUsd: number, leverage: number) {
     liquidityOk: true,
     availLiq: null,
     requiredLiq,
+    underlyingConfigured: underlying.configured,
+    underlyingSymbol: underlying.symbol,
     warnings,
-    ready: oracleOk,
+    ready: oracleOk && wrapOk,
   };
 }

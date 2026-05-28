@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
-import { useAccount, usePublicClient } from 'wagmi';
-import { CONTRACTS, POSITION_MANAGER_ABI, TOKEN_DECIMALS } from '@/lib/contracts';
+import { useAccount, useChainId, usePublicClient } from 'wagmi';
+import { getContracts, POSITION_MANAGER_ABI, TOKEN_DECIMALS } from '@/lib/contracts';
 import { decryptForTxWithRetry, isCofheReady } from '@/hooks/useCofhe';
 import { useStore, type PositionStatus } from '@/store/useStore';
 import { toast } from '@/components/ui/sonner';
@@ -18,6 +18,8 @@ function bigIntToNumber(value: bigint, decimals: number): number {
 export function useDecryptPosition() {
   const { address: walletAddress } = useAccount();
   const publicClient = usePublicClient();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
 
   const positions = useStore(s => s.positions);
   const markPrice = useStore(s => s.market.markPrice);
@@ -47,7 +49,7 @@ export function useDecryptPosition() {
 
     try {
       const pmPosRaw = await publicClient.readContract({
-        address: CONTRACTS.positionManager,
+        address: contracts.positionManager,
         abi: POSITION_MANAGER_ABI,
         functionName: 'getMyPosition',
         args: [pos.positionKey],
@@ -131,11 +133,11 @@ export function useDecryptPosition() {
       }
 
       // CoFHE decrypt-for-tx can be nonce-sensitive: keep it sequential.
-      const sizeRes = await decryptForTxWithRetry(BigInt(sizeHandle), { label: 'pos.size' });
-      const collateralRes = await decryptForTxWithRetry(BigInt(collateralHandle), { label: 'pos.collateral' });
-      const entryPriceRes = await decryptForTxWithRetry(BigInt(entryPriceHandle), { label: 'pos.entryPrice' });
-      const eLeverageRes = await decryptForTxWithRetry(BigInt(eLeverageHandle), { label: 'pos.eLeverage' });
-      const isLongRes = await decryptForTxWithRetry(BigInt(isLongHandle), { label: 'pos.isLong' });
+      const sizeRes = await decryptForTxWithRetry(BigInt(sizeHandle), { chainId, label: 'pos.size' });
+      const collateralRes = await decryptForTxWithRetry(BigInt(collateralHandle), { chainId, label: 'pos.collateral' });
+      const entryPriceRes = await decryptForTxWithRetry(BigInt(entryPriceHandle), { chainId, label: 'pos.entryPrice' });
+      const eLeverageRes = await decryptForTxWithRetry(BigInt(eLeverageHandle), { chainId, label: 'pos.eLeverage' });
+      const isLongRes = await decryptForTxWithRetry(BigInt(isLongHandle), { chainId, label: 'pos.isLong' });
 
       const size = bigIntToNumber(sizeRes.decryptedValue, TOKEN_DECIMALS);
       const collateral = bigIntToNumber(collateralRes.decryptedValue, TOKEN_DECIMALS);
@@ -170,6 +172,6 @@ export function useDecryptPosition() {
       // Let user retry without requiring a refresh.
       updatePosition(id, { status: 'encrypted' });
     }
-  }, [positions, publicClient, walletAddress, markPrice, setPositionStatus, updatePosition]);
+  }, [positions, publicClient, walletAddress, markPrice, setPositionStatus, updatePosition, contracts.positionManager]);
 }
 

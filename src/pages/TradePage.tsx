@@ -1,24 +1,33 @@
 import { useState, useEffect, useRef } from 'react';
-import { useAccount, usePublicClient } from 'wagmi';
+import { useAccount, useChainId, usePublicClient } from 'wagmi';
 import { useStore } from '@/store/useStore';
 import { useMarketData } from '@/hooks/useMarket';
 import { useOpenPosition, useCancelOrder, useClosePosition, useTradePrecheck } from '@/hooks/useTrade';
 import { usePositions } from '@/hooks/usePositions';
 import { useOrders } from '@/hooks/useOrders';
 import { useDecryptPosition } from '@/hooks/useDecryptPosition';
-import { CONTRACTS, FROM_BLOCK } from '@/lib/contracts';
+import { getContracts, getFromBlock } from '@/lib/contracts';
 import { PriceDisplay } from '@/components/shade/PriceDisplay';
 import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
 import { EncryptedField } from '@/components/shade/EncryptedField';
 import { DecryptButton } from '@/components/shade/DecryptButton';
 import { PoolBadge } from '@/components/shade/PoolBadge';
 import { LeverageSelector } from '@/components/shade/LeverageSelector';
+import { CollateralModeToggle } from '@/components/shade/CollateralModeToggle';
+import type { CollateralMode } from '@/lib/composability';
+import { formatUnits } from 'viem';
+import { useUnderlyingTokenMeta, useWrapUnderlyingBalance } from '@/hooks/useUnderlyingToken';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
-import { TrendingUp, TrendingDown, X as XIcon, Shield, AlertTriangle } from 'lucide-react';
+import { TrendingUp, TrendingDown, X as XIcon, Shield, AlertTriangle, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { CLOSE_STEP_LABELS, type CloseStep } from '@/hooks/useTrade';
+import { ClosePayoutToggle } from '@/components/shade/ClosePayoutToggle';
+import type { ClosePayoutMode } from '@/lib/closePayout';
 import { createChart, ColorType, CandlestickSeries, HistogramSeries, type IChartApi, type UTCTimestamp } from 'lightweight-charts';
 import { parseAbiItem } from 'viem';
+import { PageShell } from '@/components/layout/PageShell';
+import { InfoPopover } from '@/components/ui/InfoPopover';
 
 // Bridges injected wallet state (wagmi) → Zustand store
 // FHE token balances are encrypted — sync only connection state.
@@ -35,6 +44,9 @@ function useWalletSync() {
 function TradingChart() {
   const chartRef = useRef<HTMLDivElement>(null);
   const { market, updateMarket } = useStore();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const fromBlock = getFromBlock(chainId);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -260,7 +272,10 @@ function OrderPanel() {
   const [collateral, setCollateral] = useState('');
   const [leverage, setLeverage] = useState(5);
   const [limitPrice, setLimitPrice] = useState('');
+  const [collateralMode, setCollateralMode] = useState<CollateralMode>('encrypted');
   const { wallet, market } = useStore();
+  const underlying = useUnderlyingTokenMeta();
+  const { balance: underlyingBalance } = useWrapUnderlyingBalance();
 
   const { execute, status, error, reset } = useOpenPosition();
 
@@ -277,13 +292,29 @@ function OrderPanel() {
   const size = collateralNum * leverage;
   const sizeInAsset = market.markPrice > 0 ? (size / market.markPrice) : 0;
 
-  const { warnings, ready: precheckReady } = useTradePrecheck(collateralNum, leverage);
+  const { warnings, ready: precheckReady } = useTradePrecheck(
+    collateralNum,
+    leverage,
+    collateralMode,
+    orderType,
+  );
 
-  const isSubmitting = status === 'setting_operator' || status === 'encrypting' || status === 'submitting';
+  const isSubmitting =
+    status === 'setting_operator' ||
+    status === 'approving_underlying' ||
+    status === 'encrypting' ||
+    status === 'submitting';
+
+  const underlyingBalanceLabel =
+    underlyingBalance !== undefined && underlying.configured
+      ? `${formatUnits(underlyingBalance, underlying.decimals)} ${underlying.symbol}`
+      : null;
+
   const buttonLabel = () => {
     if (!wallet.connected) return 'Connect Wallet';
     if (status === 'setting_operator') return 'Setting Operator…';
-    if (status === 'encrypting') return 'Encrypting…';
+    if (status === 'approving_underlying') return 'Approving underlying…';
+    if (status === 'encrypting') return collateralMode === 'wrap' ? 'Wrapping & encrypting…' : 'Encrypting…';
     if (status === 'submitting') return 'Confirming…';
     if (status === 'fhe_decrypt_sent') return 'Awaiting CoFHE decrypt…';
     if (status === 'confirmed') return 'Order Placed!';
@@ -348,12 +379,25 @@ function OrderPanel() {
         </div>
       )}
 
+      {orderType === 'market' && (
+        <CollateralModeToggle
+          value={collateralMode}
+          onChange={setCollateralMode}
+          underlyingSymbol={underlying.symbol}
+          disabled={!underlying.wrapConfigured && collateralMode === 'wrap'}
+        />
+      )}
+
       {/* Collateral Input */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className="text-xs text-muted-foreground">Collateral</label>
           <span className="text-xs text-muted-foreground font-mono">
-            Balance: <span className="text-shade-teal/70">encrypted</span>
+            {collateralMode === 'wrap' && underlyingBalanceLabel ? (
+              <>Balance: {underlyingBalanceLabel}</>
+            ) : (
+              <>Balance: <span className="text-shade-teal/70">encrypted</span></>
+            )}
           </span>
         </div>
         <div className="relative">
@@ -404,20 +448,53 @@ function OrderPanel() {
       )}
 
       {/* FHE Note */}
-      <div className="flex items-start gap-2 p-2.5 rounded-md bg-shade-teal/5 border border-shade-teal/10">
+      <div className="flex items-start gap-2 p-2.5 rounded-xl bg-shade-teal/5 border border-shade-teal/10">
         <Shield className="w-3.5 h-3.5 text-shade-teal mt-0.5 shrink-0" />
-        <p className="text-[11px] text-shade-text-secondary leading-relaxed">
-          Maximum privacy: your collateral, position size, entry price, and PnL are all FHE-encrypted on-chain.
-        </p>
+        <div className="flex-1 min-w-0 space-y-1">
+          <p className="text-[11px] text-shade-text-secondary leading-relaxed">
+            {collateralMode === 'wrap' ? 'Composability mode' : 'Max privacy mode'}
+          </p>
+          <InfoPopover
+            label="Details"
+            content={
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {collateralMode === 'wrap'
+                  ? 'Plain underlying is wrapped into encrypted collateral on-chain; leverage and direction stay encrypted.'
+                  : 'Your collateral, position size, entry price, and PnL are kept FHE-encrypted on-chain.'}
+              </p>
+            }
+          />
+        </div>
       </div>
 
       {/* Pre-flight warnings — shown before MetaMask is opened */}
-      {warnings.map((w, i) => (
-        <div key={i} className="flex items-start gap-2 p-2.5 rounded-md bg-shade-amber/10 border border-shade-amber/20">
+      {warnings.length > 0 && (
+        <div className="flex items-start gap-2 p-2.5 rounded-xl bg-shade-amber/10 border border-shade-amber/20">
           <AlertTriangle className="w-3.5 h-3.5 text-shade-amber mt-0.5 shrink-0" />
-          <p className="text-[11px] text-shade-amber leading-relaxed font-mono">{w}</p>
+          <div className="flex-1 min-w-0 space-y-2">
+            <div>
+              <p className="text-[11px] text-shade-amber leading-relaxed font-semibold">
+                Pre-flight checks ({warnings.length})
+              </p>
+              <p className="text-[11px] text-shade-amber leading-relaxed font-mono mt-0.5">{warnings[0]}</p>
+            </div>
+            {warnings.length > 1 ? (
+              <InfoPopover
+                label={`+${warnings.length - 1} more`}
+                content={
+                  <div className="space-y-2">
+                    {warnings.map((w, i) => (
+                      <p key={i} className="text-[11px] text-shade-amber leading-relaxed font-mono">
+                        {w}
+                      </p>
+                    ))}
+                  </div>
+                }
+              />
+            ) : null}
+          </div>
         </div>
-      ))}
+      )}
 
       {/* Error */}
       {error && (
@@ -428,9 +505,22 @@ function OrderPanel() {
 
       {/* FHE task confirmation notice */}
       {status === 'fhe_decrypt_sent' && (
-        <p className="text-xs rounded-md px-3 py-2 border text-shade-amber bg-shade-amber/10 border-shade-amber/20">
-          Decrypt task submitted. CoFHE will open your position in ~15-30s.
-        </p>
+        <div className="flex items-start justify-between gap-3 p-3 rounded-xl text-xs border text-shade-amber bg-shade-amber/10 border-shade-amber/20">
+          <div className="flex items-start gap-2">
+            <Loader2 className="w-3.5 h-3.5 mt-0.5 animate-spin" />
+            <p className="leading-relaxed">
+              Decrypt requested. CoFHE will open your position soon.
+            </p>
+          </div>
+          <InfoPopover
+            label="Timing"
+            content={
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                After submitting, CoFHE typically opens the position in ~15–30 seconds.
+              </p>
+            }
+          />
+        </div>
       )}
 
       {/* CTA */}
@@ -441,6 +531,7 @@ function OrderPanel() {
           isLong: side === 'long',
           orderType,
           triggerPrice: limitPrice ? parseFloat(limitPrice) : undefined,
+          collateralMode: orderType === 'market' ? collateralMode : 'encrypted',
         })}
         className={cn(
           'w-full font-semibold text-sm py-5',
@@ -458,14 +549,112 @@ function OrderPanel() {
   );
 }
 
+function CloseProgressBar({
+  step,
+  status,
+  error,
+  onDismiss,
+}: {
+  step: CloseStep;
+  status: string;
+  error: string | null;
+  onDismiss?: () => void;
+}) {
+  if (step === 'idle' && status !== 'error') return null;
+
+  const isError = status === 'error';
+  const isDone = step === 'done' && status === 'confirmed';
+  const isBusy = step === 'request' || step === 'decrypt' || step === 'finalize' || step === 'keeper';
+
+  const message = isError
+    ? (error ?? 'Close failed')
+    : isDone
+      ? CLOSE_STEP_LABELS.done
+      : step !== 'idle'
+        ? CLOSE_STEP_LABELS[step]
+        : '';
+
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-2 p-2.5 rounded-md text-xs border',
+        isDone
+          ? 'bg-shade-green/10 border-shade-green/20 text-shade-green'
+          : isError
+            ? 'bg-shade-red/10 border-shade-red/20 text-shade-red'
+            : 'bg-shade-teal/10 border-shade-teal/20 text-shade-teal',
+      )}
+    >
+      {isDone ? (
+        <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+      ) : isError ? (
+        <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+      ) : isBusy ? (
+        <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 animate-spin" />
+      ) : null}
+      <div className="flex-1 min-w-0 space-y-1">
+        <p className="font-medium leading-snug">{message}</p>
+        {isBusy && step === 'decrypt' && (
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Decrypting privately…
+            </p>
+            <InfoPopover
+              label="Details"
+              content={
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  CoFHE decrypts encrypted settlement handles off-chain before phase 3 publishes proofs on-chain.
+                </p>
+              }
+            />
+          </div>
+        )}
+        {isBusy && step === 'keeper' && (
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Settling payout…
+            </p>
+            <InfoPopover
+              label="Details"
+              content={
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Backend keeper decrypts settlement and calls finalizeClosePlainPayout (~1–3 min). Plain USDC is
+                  sent to your wallet.
+                </p>
+              }
+            />
+          </div>
+        )}
+        {(isDone || isError) && onDismiss && (
+          <button type="button" onClick={onDismiss} className="underline underline-offset-2 text-[10px]">
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // --- Position Panel ---
 function PositionPanel() {
   const { positions } = useStore();
   const decryptPosition = useDecryptPosition();
-  const { execute: closePosition, status: closeStatus } = useClosePosition();
-  // `useClosePosition()` has a single shared `closeStatus` for the whole panel.
-  // Track which specific positionKey we clicked so only that row shows "Closing…".
+  const {
+    execute: closePosition,
+    status: closeStatus,
+    closeStep,
+    isClosing,
+    error: closeError,
+    reset: resetClose,
+  } = useClosePosition();
   const [closingPositionKey, setClosingPositionKey] = useState<string | null>(null);
+  const [closePayoutMode, setClosePayoutMode] = useState<ClosePayoutMode>('encrypted');
+  const underlyingMeta = useUnderlyingTokenMeta();
+
+  const dismissClose = () => {
+    resetClose();
+    setClosingPositionKey(null);
+  };
 
   if (positions.length === 0) {
     return (
@@ -499,6 +688,11 @@ function PositionPanel() {
                         : 'ENCRYPTED'}
               </span>
               <PoolBadge pool={pos.pool} />
+              {pos.openedBlockNumber != null && (
+                <span className="text-[10px] text-muted-foreground font-mono" title={pos.positionKey}>
+                  #{pos.openedBlockNumber}
+                </span>
+              )}
             </div>
             <DecryptButton status={pos.status} onDecrypt={() => decryptPosition(pos.id)} />
           </div>
@@ -547,23 +741,52 @@ function PositionPanel() {
             </div>
           </div>
 
-          {/* Actions — close does not require decryption */}
-          <div className="flex gap-2 pt-1">
+          {closingPositionKey === pos.positionKey && (
+            <CloseProgressBar
+              step={closeStep}
+              status={closeStatus}
+              error={closeError}
+              onDismiss={dismissClose}
+            />
+          )}
+
+          <ClosePayoutToggle
+            value={closePayoutMode}
+            onChange={setClosePayoutMode}
+            underlyingSymbol={underlyingMeta.symbol}
+            disabled={isClosing}
+          />
+
+          <div className="flex flex-col gap-2 pt-1">
             <Button
               variant="outline"
               size="sm"
               className="text-xs flex-1"
-              disabled={closeStatus === 'submitting' && closingPositionKey !== null}
+              disabled={
+                (closingPositionKey === pos.positionKey && (isClosing || closeStep === 'done')) ||
+                (closingPositionKey !== null && closingPositionKey !== pos.positionKey)
+              }
               onClick={async () => {
                 setClosingPositionKey(pos.positionKey);
-                try {
-                  await closePosition(pos.positionKey);
-                } finally {
-                  setClosingPositionKey(null);
-                }
+                await closePosition(pos.positionKey, {
+                  payout: closePayoutMode,
+                  isLong: pos.side === 'long',
+                });
               }}
             >
-              {closeStatus === 'submitting' && closingPositionKey === pos.positionKey ? 'Closing…' : 'Close Position'}
+              {closingPositionKey === pos.positionKey && closeStep !== 'idle'
+                ? closeStep === 'done'
+                  ? 'Closed'
+                  : closeStep === 'request'
+                    ? 'Step 1/3: Requesting…'
+                    : closeStep === 'decrypt'
+                      ? 'Step 2/3: Decrypting…'
+                      : closeStep === 'keeper'
+                        ? 'Step 3/3: Settling USDC…'
+                        : 'Step 3/3: Finalizing…'
+                : closePayoutMode === 'plain'
+                  ? `Close → ${underlyingMeta.symbol}`
+                  : 'Close Position'}
             </Button>
           </div>
         </div>
@@ -624,6 +847,9 @@ export default function TradePage() {
 
   // Recent executions: derive from on-chain OrderExecuted logs (no hardcoded rows).
   const { address } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const fromBlockDefault = getFromBlock(chainId);
   const publicClient = usePublicClient();
   const [executions, setExecutions] = useState<{ orderId: string; blockNumber: bigint; timestampMs: number }[]>([]);
 
@@ -634,14 +860,14 @@ export default function TradePage() {
     }
 
     let cancelled = false;
-    const omAddress = CONTRACTS.orderManager as `0x${string}`;
+    const omAddress = contracts.orderManager as `0x${string}`;
 
     async function fetchRecent() {
       try {
         const currentBlock = await publicClient.getBlockNumber();
         const fromBlock = currentBlock > 20_000n
-          ? (currentBlock - 20_000n > FROM_BLOCK ? currentBlock - 20_000n : FROM_BLOCK)
-          : FROM_BLOCK;
+          ? (currentBlock - 20_000n > fromBlockDefault ? currentBlock - 20_000n : fromBlockDefault)
+          : fromBlockDefault;
 
         const logs = await publicClient.getLogs({
           address: omAddress,
@@ -673,7 +899,7 @@ export default function TradePage() {
       address: omAddress,
       event: parseAbiItem('event OrderExecuted(uint256 indexed orderId, address indexed trader)'),
       args: { trader: address },
-      fromBlock: FROM_BLOCK,
+      fromBlock: fromBlockDefault,
       poll: true,
       pollingInterval: 5_000,
       onLogs: () => void fetchRecent(),
@@ -683,20 +909,27 @@ export default function TradePage() {
       cancelled = true;
       unwatch?.();
     };
-  }, [address, publicClient]);
+  }, [address, publicClient, contracts.orderManager, fromBlockDefault]);
 
   return (
-    <div className="animate-fade-in">
+    <div>
       <TickerBar />
 
       {/* Pool indicator */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-shade-bg-primary">
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-shade-teal/10 border border-shade-teal/20">
-          <span className="text-[10px] text-shade-teal font-mono">⬡ FHE Pool · FHE Token / ETH — Maximum Privacy</span>
-        </div>
-      </div>
-
-      <div className="max-w-[1600px] mx-auto p-4">
+      <PageShell
+        title="Trade"
+        subtitle={
+          market.markPrice > 0
+            ? `Mark: $${market.markPrice.toLocaleString()} · Private by default`
+            : 'Private by default'
+        }
+        width="2xl"
+        actions={(
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-shade-teal/10 border border-shade-teal/20">
+            <span className="text-[11px] font-medium text-shade-teal">FHE Pool · Maximum privacy</span>
+          </div>
+        )}
+      >
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4">
           {/* Left: Chart + Bottom tabs */}
           <div className="space-y-4">
@@ -705,7 +938,7 @@ export default function TradePage() {
             </div>
 
             <Tabs defaultValue="positions" className="shade-card">
-              <TabsList className="w-full bg-shade-bg-secondary rounded-none border-b border-border">
+              <TabsList className="w-full bg-shade-bg-secondary/70 rounded-none border-b border-border/70">
                 <TabsTrigger value="positions" className="text-xs">My Positions</TabsTrigger>
                 <TabsTrigger value="orders" className="text-xs">Orders</TabsTrigger>
                 <TabsTrigger value="executions" className="text-xs">Recent Executions</TabsTrigger>
@@ -722,7 +955,7 @@ export default function TradePage() {
                 ) : (
                   <div className="space-y-2">
                     {executions.map((ex) => (
-                      <div key={`${ex.blockNumber.toString()}-${ex.orderId}`} className="flex items-center justify-between p-2.5 bg-secondary/30 rounded-md text-xs">
+                      <div key={`${ex.blockNumber.toString()}-${ex.orderId}`} className="flex items-center justify-between p-3 bg-secondary/30 rounded-xl text-xs border border-border/60">
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-muted-foreground">Executed</span>
                           <span className="font-mono text-foreground">#{ex.orderId}</span>
@@ -746,7 +979,7 @@ export default function TradePage() {
             <OrderPanel />
           </div>
         </div>
-      </div>
+      </PageShell>
     </div>
   );
 }
