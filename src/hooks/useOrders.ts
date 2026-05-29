@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useAccount, useChainId, usePublicClient } from 'wagmi';
 import { parseAbiItem } from 'viem';
 import { getContracts, getFromBlock, ORDER_MANAGER_ABI } from '@/lib/contracts';
+import { getLogsChunked } from '@/lib/logScan';
 import { useStore, type Order } from '@/store/useStore';
 
 const PAIR = 'ETH-USD';
@@ -35,9 +36,11 @@ export function useOrders() {
             ? fromBlockDefault
             : (currentBlock > 9_000n ? currentBlock - 9_000n : 0n);
 
-        const createdLogs = await publicClient!.getLogs({
+        const createdLogs = await getLogsChunked(publicClient!, {
           address: omAddress,
-          event: parseAbiItem('event OrderCreated(uint256 indexed orderId, address indexed trader, address token, bytes32 collateralHandle)'),
+          event: parseAbiItem(
+            'event OrderCreated(uint256 indexed orderId, address indexed trader, address token, bytes32 collateralHandle)',
+          ),
           args: { trader: address },
           fromBlock,
           toBlock: currentBlock,

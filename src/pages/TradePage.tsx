@@ -2,11 +2,19 @@ import { useState, useEffect, useRef } from 'react';
 import { useAccount, useChainId, usePublicClient } from 'wagmi';
 import { useStore } from '@/store/useStore';
 import { useMarketData } from '@/hooks/useMarket';
-import { useOpenPosition, useCancelOrder, useClosePosition, useTradePrecheck } from '@/hooks/useTrade';
+import {
+  useOpenPosition,
+  useCancelOrder,
+  useCancelPendingOpen,
+  useClosePosition,
+  usePendingOpenRequest,
+  useTradePrecheck,
+} from '@/hooks/useTrade';
 import { usePositions } from '@/hooks/usePositions';
 import { useOrders } from '@/hooks/useOrders';
 import { useDecryptPosition } from '@/hooks/useDecryptPosition';
 import { getContracts, getFromBlock } from '@/lib/contracts';
+import { getLogsChunked } from '@/lib/logScan';
 import { PriceDisplay } from '@/components/shade/PriceDisplay';
 import { PrivacyBadge } from '@/components/shade/PrivacyBadge';
 import { EncryptedField } from '@/components/shade/EncryptedField';
@@ -278,6 +286,13 @@ function OrderPanel() {
   const { balance: underlyingBalance } = useWrapUnderlyingBalance();
 
   const { execute, status, error, reset } = useOpenPosition();
+  const { exists: hasPendingOpen, refetch: refetchPendingOpen } = usePendingOpenRequest();
+  const {
+    execute: cancelPendingOpen,
+    status: cancelPendingStatus,
+    error: cancelPendingError,
+    reset: resetCancelPending,
+  } = useCancelPendingOpen();
 
   // Reset form after confirmed
   useEffect(() => {
@@ -298,6 +313,8 @@ function OrderPanel() {
     collateralMode,
     orderType,
   );
+
+  const showPendingOpenBanner = orderType === 'market' && hasPendingOpen;
 
   const isSubmitting =
     status === 'setting_operator' ||
@@ -467,6 +484,44 @@ function OrderPanel() {
         </div>
       </div>
 
+      {/* Stuck two-phase market open */}
+      {showPendingOpenBanner && (
+        <div className="flex flex-col gap-2 p-2.5 rounded-xl bg-shade-amber/10 border border-shade-amber/20">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-shade-amber mt-0.5 shrink-0" />
+            <p className="text-[11px] text-shade-amber leading-relaxed">
+              A prior market open is still pending on-chain (phase 1 submitted, phase 2 not finished).
+              Cancel it to start a new open, or wait if CoFHE is still finalizing.
+              {collateralMode === 'wrap' && (
+                <> Wrapped collateral from phase 1 stays in your encrypted balance after cancel.</>
+              )}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full text-xs border-shade-amber/30 text-shade-amber hover:bg-shade-amber/10"
+            disabled={cancelPendingStatus === 'submitting'}
+            onClick={async () => {
+              resetCancelPending();
+              await cancelPendingOpen(async () => {
+                await refetchPendingOpen();
+              });
+            }}
+          >
+            {cancelPendingStatus === 'submitting'
+              ? 'Cancelling…'
+              : cancelPendingStatus === 'confirmed'
+                ? 'Pending open cleared'
+                : 'Cancel pending open'}
+          </Button>
+          {cancelPendingError && (
+            <p className="text-[11px] text-shade-red break-all">{cancelPendingError}</p>
+          )}
+        </div>
+      )}
+
       {/* Pre-flight warnings — shown before MetaMask is opened */}
       {warnings.length > 0 && (
         <div className="flex items-start gap-2 p-2.5 rounded-xl bg-shade-amber/10 border border-shade-amber/20">
@@ -541,7 +596,14 @@ function OrderPanel() {
               ? 'bg-shade-green hover:bg-shade-green/90 text-background'
               : 'bg-shade-red hover:bg-shade-red/90 text-foreground'
         )}
-        disabled={!wallet.connected || collateralNum <= 0 || isSubmitting || status === 'fhe_decrypt_sent' || !precheckReady}
+        disabled={
+          !wallet.connected ||
+          collateralNum <= 0 ||
+          isSubmitting ||
+          status === 'fhe_decrypt_sent' ||
+          !precheckReady ||
+          (orderType === 'market' && showPendingOpenBanner)
+        }
       >
         {buttonLabel()}
       </Button>
@@ -564,7 +626,7 @@ function CloseProgressBar({
 
   const isError = status === 'error';
   const isDone = step === 'done' && status === 'confirmed';
-  const isBusy = step === 'request' || step === 'decrypt' || step === 'finalize' || step === 'keeper';
+  const isBusy = step === 'request' || step === 'keeper';
 
   const message = isError
     ? (error ?? 'Close failed')
@@ -594,32 +656,17 @@ function CloseProgressBar({
       ) : null}
       <div className="flex-1 min-w-0 space-y-1">
         <p className="font-medium leading-snug">{message}</p>
-        {isBusy && step === 'decrypt' && (
-          <div className="flex items-start justify-between gap-3">
-            <p className="text-[10px] text-muted-foreground leading-snug">
-              Decrypting privately…
-            </p>
-            <InfoPopover
-              label="Details"
-              content={
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  CoFHE decrypts encrypted settlement handles off-chain before phase 3 publishes proofs on-chain.
-                </p>
-              }
-            />
-          </div>
-        )}
         {isBusy && step === 'keeper' && (
           <div className="flex items-start justify-between gap-3">
             <p className="text-[10px] text-muted-foreground leading-snug">
-              Settling payout…
+              No second wallet transaction — the backend finalizer decrypts and settles on-chain.
             </p>
             <InfoPopover
               label="Details"
               content={
                 <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Backend keeper decrypts settlement and calls finalizeClosePlainPayout (~1–3 min). Plain USDC is
-                  sent to your wallet.
+                  shadespot-backend runs the close finalizer (PositionManager.finalizer / FHERouter.owner).
+                  Settlement usually completes in about 1–3 minutes on all supported testnets.
                 </p>
               }
             />
@@ -778,12 +825,12 @@ function PositionPanel() {
                 ? closeStep === 'done'
                   ? 'Closed'
                   : closeStep === 'request'
-                    ? 'Step 1/3: Requesting…'
-                    : closeStep === 'decrypt'
-                      ? 'Step 2/3: Decrypting…'
-                      : closeStep === 'keeper'
-                        ? 'Step 3/3: Settling USDC…'
-                        : 'Step 3/3: Finalizing…'
+                    ? 'Step 1/2: Requesting…'
+                    : closeStep === 'keeper'
+                      ? closePayoutMode === 'plain'
+                        ? 'Step 2/2: Settling payout…'
+                        : 'Step 2/2: Finalizing…'
+                      : 'Closing…'
                 : closePayoutMode === 'plain'
                   ? `Close → ${underlyingMeta.symbol}`
                   : 'Close Position'}
@@ -869,7 +916,7 @@ export default function TradePage() {
           ? (currentBlock - 20_000n > fromBlockDefault ? currentBlock - 20_000n : fromBlockDefault)
           : fromBlockDefault;
 
-        const logs = await publicClient.getLogs({
+        const logs = await getLogsChunked(publicClient, {
           address: omAddress,
           event: parseAbiItem('event OrderExecuted(uint256 indexed orderId, address indexed trader)'),
           args: { trader: address },

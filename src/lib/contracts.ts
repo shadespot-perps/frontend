@@ -710,6 +710,18 @@ export const DEV_PLAIN_ERC20_ABI = [
 
 export const FHE_ROUTER_READ_ABI = [
   {
+    name: 'pendingOpenRequests',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'trader', type: 'address' }],
+    outputs: [
+      { name: 'collateralHandle', type: 'uint256' },
+      { name: 'leverageHandle', type: 'uint256' },
+      { name: 'isLongHandle', type: 'uint256' },
+      { name: 'exists', type: 'bool' },
+    ],
+  },
+  {
     name: 'underlyingToken',
     type: 'function',
     stateMutability: 'view',

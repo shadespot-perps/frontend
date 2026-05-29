@@ -53,24 +53,23 @@ export function ClosePayoutToggle({
           Plain {underlyingSymbol}
         </button>
       </div>
-      {value === 'plain' && (
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[10px] text-muted-foreground leading-relaxed">
-            Plain settlement payout is public on-chain.
-          </p>
-          <InfoPopover
-            label="Why?"
-            content={
-              <>
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Plain mode runs the flow through the backend keeper (router owner). You receive plain{' '}
-                  {underlyingSymbol} from vault reserve, and the payout amount is public on-chain.
-                </p>
-              </>
-            }
-          />
-        </div>
-      )}
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[10px] text-muted-foreground leading-relaxed">
+          {value === 'plain'
+            ? `Plain ${underlyingSymbol} payout is public on-chain after the backend finalizer settles.`
+            : 'FHE token payout stays encrypted; backend finalizer completes close on-chain.'}
+        </p>
+        <InfoPopover
+          label="Flow"
+          content={
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Your wallet only signs the close request. shadespot-backend decrypts settlement handles and
+              submits finalize (no second MetaMask prompt). Works the same on Arbitrum Sepolia, ETH Sepolia,
+              and Base Sepolia.
+            </p>
+          }
+        />
+      </div>
     </div>
   );
 }

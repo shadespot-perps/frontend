@@ -7,7 +7,7 @@ import {
   useAccount,
   useChainId,
 } from 'wagmi';
-import { formatUnits, parseUnits, parseAbiItem, decodeEventLog } from 'viem';
+import { formatUnits, parseUnits } from 'viem';
 import { Encryptable } from '@cofhe/sdk';
 import {
   getContracts, getFromBlock, getIndexToken, TOKEN_DECIMALS,
@@ -16,11 +16,12 @@ import {
   POSITION_MANAGER_ABI,
 } from '@/lib/contracts';
 import { assertUint64Amount, UINT64_MAX, type CollateralMode } from '@/lib/composability';
-import { waitForPlainPayoutSettled, type ClosePayoutMode } from '@/lib/closePayout';
+import { waitForCloseSettledByKeeper, type ClosePayoutMode } from '@/lib/closePayout';
 import { resolveOpenLiquidityProof } from '@/lib/tradeLiquidity';
-import { decryptForTxWithRetry, encryptInputsOnChain, isCofheReady, normaliseEnc, toHexSig } from '@/hooks/useCofhe';
+import { encryptInputsOnChain, isCofheReady, normaliseEnc } from '@/hooks/useCofhe';
 import { useApproveUnderlying } from '@/hooks/useApproveUnderlying';
 import { formatWalletError } from '@/lib/walletErrors';
+import { positionKeysFromReceipt, recordPositionKey, removePositionKey } from '@/lib/positionIndex';
 import {
   useUnderlyingTokenMeta,
   useWrapUnderlyingAllowance,
@@ -36,20 +37,19 @@ export type TradeStatus =
   | 'encrypting'          // FHE proof generation
   | 'submitting'          // tx in wallet
   | 'fhe_decrypt_sent'    // phase-1 confirmed, waiting for CoFHE TN decrypt
-  | 'awaiting_decrypt'    // waiting for CoFHE TN decrypt during close finalization
+  | 'awaiting_decrypt'    // waiting for CoFHE TN decrypt (open flow)
+  | 'awaiting_finalizer'  // close: backend keeper finalizing on-chain
   | 'confirmed'
   | 'error';
 
 export type { CollateralMode };
 
-/** User-visible steps for the two-phase close (request → TN decrypt → finalize). */
-export type CloseStep = 'idle' | 'request' | 'decrypt' | 'finalize' | 'keeper' | 'done';
+/** User-visible close flow: wallet requests close, backend finalizer settles on-chain. */
+export type CloseStep = 'idle' | 'request' | 'keeper' | 'done';
 
 export const CLOSE_STEP_LABELS: Record<Exclude<CloseStep, 'idle'>, string> = {
-  request: 'Step 1/3: Requesting close on-chain…',
-  decrypt: 'Step 2/3: Decrypting settlement (CoFHE)…',
-  finalize: 'Step 3/3: Publishing settlement on-chain…',
-  keeper: 'Step 3/3: Waiting for plain payout settlement…',
+  request: 'Step 1/2: Requesting close on-chain…',
+  keeper: 'Step 2/2: Backend finalizing settlement…',
   done: 'Position closed',
 };
 
@@ -205,7 +205,7 @@ export function useOpenPosition() {
 
         setStatus('submitting');
         const phase2Fees = await publicClient!.estimateFeesPerGas();
-        await write({
+        const openHash = await write({
           address: contracts.router,
           abi: FHE_ROUTER_ABI,
           functionName: 'finalizeOpenPositionPlain',
@@ -214,6 +214,10 @@ export function useOpenPosition() {
           maxFeePerGas: phase2Fees.maxFeePerGas,
           maxPriorityFeePerGas: phase2Fees.maxPriorityFeePerGas,
         });
+        const openReceipt = await publicClient!.waitForTransactionReceipt({ hash: openHash });
+        for (const key of positionKeysFromReceipt(openReceipt, contracts.positionManager, contracts.router)) {
+          recordPositionKey(chainId, walletAddress as `0x${string}`, key, Number(openReceipt.blockNumber));
+        }
       } else {
         setStatus('encrypting');
         const [eCollateral, eLeverage, eIsLong] = await encryptInputsOnChain(chainId, [
@@ -249,7 +253,7 @@ export function useOpenPosition() {
 
         setStatus('submitting');
         const phase2Fees = await publicClient!.estimateFeesPerGas();
-        await write({
+        const openHash = await write({
           address: contracts.router,
           abi: FHE_ROUTER_ABI,
           functionName: 'finalizeOpenPosition',
@@ -258,6 +262,10 @@ export function useOpenPosition() {
           maxFeePerGas: phase2Fees.maxFeePerGas,
           maxPriorityFeePerGas: phase2Fees.maxPriorityFeePerGas,
         });
+        const openReceipt = await publicClient!.waitForTransactionReceipt({ hash: openHash });
+        for (const key of positionKeysFromReceipt(openReceipt, contracts.positionManager, contracts.router)) {
+          recordPositionKey(chainId, walletAddress as `0x${string}`, key, Number(openReceipt.blockNumber));
+        }
       }
 
       setStatus('confirmed');
@@ -298,7 +306,6 @@ export function useClosePosition() {
   const chainId = useChainId();
   const contracts = getContracts(chainId);
   const indexToken = getIndexToken(chainId);
-  const fromBlockDefault = getFromBlock(chainId);
 
   const reset = useCallback(() => {
     setStatus('idle');
@@ -316,11 +323,6 @@ export function useClosePosition() {
 
     try {
       if (!walletAddress) throw new Error('Wallet not connected');
-
-      // Plain payout step 3 is done by router owner / backend keeper — no wallet decrypt required.
-      if (payout === 'encrypted' && !isCofheReady()) {
-        throw new Error('CoFHE client not ready — wallet still connecting, please try again in a moment');
-      }
 
       // PriceOracle.getPrice() reverts if price is stale; catch it here with a friendlier error.
       const priceData = await publicClient!.readContract({
@@ -382,132 +384,19 @@ export function useClosePosition() {
         timeout: 120_000,
       });
 
-      const routerOwner = await publicClient!.readContract({
-        address: contracts.router,
-        abi: FHE_ROUTER_READ_ABI,
-        functionName: 'owner',
-      }) as `0x${string}`;
-      const canFinalizePlain =
-        payout === 'plain' &&
-        walletAddress.toLowerCase() === routerOwner.toLowerCase();
-
-      // Plain close for normal wallets: keeper decrypts + finalizeClosePlainPayout (router owner only).
-      if (payout === 'plain' && !canFinalizePlain) {
-        setCloseStep('keeper');
-        setStatus('awaiting_decrypt');
-        await waitForPlainPayoutSettled(publicClient!, contracts, positionKey, {
-          fromBlock: receipt.blockNumber,
-        });
-        useStore.getState().setPositions(
-          useStore.getState().positions.filter((p) => p.positionKey !== positionKey),
-        );
-        setCloseStep('done');
-        setStatus('confirmed');
-        return;
-      }
-
-      setCloseStep('decrypt');
-      setStatus('awaiting_decrypt');
-
-      // Extract CloseRequested handles from receipt logs (PositionManager emits it).
-      const pmAddr = contracts.positionManager.toLowerCase();
-      type CloseRequestedEvent = {
-        args: {
-          positionKey: `0x${string}`;
-          trader: `0x${string}`;
-          finalAmountHandle: `0x${string}`;
-          sizeHandle: `0x${string}`;
-        };
-      };
-
-      const closeLogs = receipt.logs
-        .filter(l => l.address.toLowerCase() === pmAddr)
-        .map(l => {
-          try {
-            return decodeEventLog({
-              abi: [parseAbiItem('event CloseRequested(bytes32 indexed positionKey, address indexed trader, bytes32 finalAmountHandle, bytes32 sizeHandle)')],
-              data: l.data,
-              topics: l.topics,
-            });
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean) as CloseRequestedEvent[];
-
-      const closeEvt = closeLogs.find(e => e.args?.positionKey === positionKey) ?? closeLogs[0];
-      const finalAmountHandle = closeEvt?.args?.finalAmountHandle as `0x${string}` | undefined;
-      const sizeHandle = closeEvt?.args?.sizeHandle as `0x${string}` | undefined;
-
-      if (!finalAmountHandle || !sizeHandle) {
-        throw new Error('CloseRequested event not found in receipt logs');
-      }
-
-      // Find collateral handle from PositionOpened (emitted when the position was opened).
-      // We scan a recent window to keep RPC load reasonable.
-      const openedLogs = await publicClient!.getLogs({
-        address: contracts.positionManager as `0x${string}`,
-        event: parseAbiItem(
-          'event PositionOpened(bytes32 indexed positionKey, address indexed trader, bytes32 sizeHandle, bytes32 collateralHandle, bytes32 isLongHandle)'
-        ),
-        args: { positionKey },
-        fromBlock: fromBlockDefault,
-        toBlock: receipt.blockNumber,
+      // finalizeClosePosition / finalizeClosePlainPayout are onlyFinalizer / onlyOwner — backend keeper only.
+      setCloseStep('keeper');
+      setStatus('awaiting_finalizer');
+      await waitForCloseSettledByKeeper(publicClient!, contracts, positionKey, payout, {
+        fromBlock: receipt.blockNumber,
       });
-
-      const collateralHandle = openedLogs[openedLogs.length - 1]?.args?.collateralHandle as `0x${string}` | undefined;
-      if (!collateralHandle) {
-        throw new Error('PositionOpened(collateralHandle) not found for this positionKey');
-      }
-
-      // Off-chain decrypt with CoFHE TN (signatures used for publishDecryptResult on-chain).
-      const [finalAmount, size, collateral] = await Promise.all([
-        decryptForTxWithRetry(BigInt(finalAmountHandle), { chainId, label: 'close.finalAmount', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
-        decryptForTxWithRetry(BigInt(sizeHandle), { chainId, label: 'close.size', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
-        decryptForTxWithRetry(BigInt(collateralHandle), { chainId, label: 'close.collateral', retries: 20, delayMs: 5000, tryWithoutPermitFallback: true }),
-      ]);
-
-      const isLongPlain = options?.isLong ?? false;
-      const finalizeArgs = [
-        positionKey,
-        finalAmount.decryptedValue,
-        toHexSig(finalAmount.signature),
-        size.decryptedValue,
-        toHexSig(size.signature),
-        collateral.decryptedValue,
-        toHexSig(collateral.signature),
-        isLongPlain,
-      ] as const;
-
-      setCloseStep('finalize');
-      setStatus('submitting');
-      const fees2 = await publicClient!.estimateFeesPerGas();
-
-      if (payout === 'plain') {
-        await write({
-          address: contracts.router,
-          abi: FHE_ROUTER_ABI,
-          functionName: 'finalizeClosePlainPayout',
-          args: [...finalizeArgs],
-          gas: 3_000_000n,
-          maxFeePerGas: fees2.maxFeePerGas,
-          maxPriorityFeePerGas: fees2.maxPriorityFeePerGas,
-        });
-      } else {
-        await write({
-          address: contracts.positionManager,
-          abi: POSITION_MANAGER_ABI,
-          functionName: 'finalizeClosePosition',
-          args: [...finalizeArgs],
-          gas: 3_000_000n,
-          maxFeePerGas: fees2.maxFeePerGas,
-          maxPriorityFeePerGas: fees2.maxPriorityFeePerGas,
-        });
-      }
 
       useStore.getState().setPositions(
         useStore.getState().positions.filter((p) => p.positionKey !== positionKey),
       );
+      if (walletAddress) {
+        removePositionKey(chainId, walletAddress as `0x${string}`, positionKey);
+      }
       setCloseStep('done');
       setStatus('confirmed');
     } catch (err: unknown) {
@@ -515,15 +404,81 @@ export function useClosePosition() {
       setStatus('error');
       setCloseStep('idle');
     }
-  }, [write, publicClient, walletAddress, contracts, indexToken, fromBlockDefault]);
+  }, [write, publicClient, walletAddress, chainId, contracts, indexToken]);
 
   const isClosing =
     closeStep === 'request' ||
-    closeStep === 'decrypt' ||
-    closeStep === 'finalize' ||
     closeStep === 'keeper';
 
   return { execute, status, closeStep, isClosing, error, reset };
+}
+
+/** On-chain phase-1 open still awaiting finalize (all networks). */
+export function usePendingOpenRequest() {
+  const { address } = useAccount();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+
+  const { data, refetch, isLoading, isFetching } = useReadContract({
+    address: contracts.router,
+    abi: FHE_ROUTER_READ_ABI,
+    functionName: 'pendingOpenRequests',
+    args: address ? [address] : undefined,
+    query: {
+      enabled: !!address,
+      refetchInterval: 12_000,
+    },
+  });
+
+  const tuple = data as readonly [bigint, bigint, bigint, boolean] | undefined;
+  const exists = tuple?.[3] ?? false;
+
+  return { exists, isLoading: isLoading || isFetching, refetch };
+}
+
+/** Clear a stuck two-phase market open (router + vault liquidity check). */
+export function useCancelPendingOpen() {
+  const [status, setStatus] = useState<TradeStatus>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  const publicClient = usePublicClient();
+  const { writeContractAsync: write } = useWriteContract();
+  const chainId = useChainId();
+  const contracts = getContracts(chainId);
+  const indexToken = getIndexToken(chainId);
+
+  const execute = useCallback(
+    async (onSuccess?: () => void | Promise<void>) => {
+      setError(null);
+      try {
+        setStatus('submitting');
+        const fees = await publicClient!.estimateFeesPerGas();
+        await write({
+          address: contracts.router,
+          abi: FHE_ROUTER_ABI,
+          functionName: 'cancelPendingOpenPosition',
+          args: [indexToken],
+          gas: 300_000n,
+          maxFeePerGas: fees.maxFeePerGas,
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+        });
+        setStatus('confirmed');
+        await onSuccess?.();
+        setTimeout(() => setStatus('idle'), 2500);
+      } catch (err: unknown) {
+        setError(formatWalletError(err));
+        setStatus('error');
+      }
+    },
+    [write, publicClient, contracts.router, indexToken],
+  );
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setError(null);
+  }, []);
+
+  return { execute, status, error, reset };
 }
 
 /** Cancel a pending limit/stop order (no fee required). */
@@ -568,6 +523,7 @@ export function useTradePrecheck(
   collateralMode: CollateralMode = 'encrypted',
   orderType: 'market' | 'limit' | 'stop' = 'market',
 ) {
+  const { exists: hasPendingOpen } = usePendingOpenRequest();
   const underlying = useUnderlyingTokenMeta();
   const { balance: underlyingBalance } = useWrapUnderlyingBalance();
   const { allowance } = useWrapUnderlyingAllowance();
@@ -602,6 +558,12 @@ export function useTradePrecheck(
     warnings.push(`Oracle price is stale (${priceAge}s old, max ${ORACLE_STALE_SECONDS}s).`);
   }
 
+  if (hasPendingOpen && orderType === 'market') {
+    warnings.push(
+      'Incomplete market open in progress — cancel it below or wait for phase 2 to finish before opening again.',
+    );
+  }
+
     if (collateralMode === 'wrap') {
     if (orderType !== 'market') {
       warnings.push('Wrap-from-underlying only supports market orders.');
@@ -632,6 +594,8 @@ export function useTradePrecheck(
       collateralWei <= UINT64_MAX &&
       (underlyingBalance === undefined || underlyingBalance >= collateralWei));
 
+  const marketBlockedByPending = hasPendingOpen && orderType === 'market';
+
   return {
     oracleOk,
     oracleNeverSet,
@@ -642,7 +606,8 @@ export function useTradePrecheck(
     requiredLiq,
     underlyingConfigured: underlying.configured,
     underlyingSymbol: underlying.symbol,
+    hasPendingOpen,
     warnings,
-    ready: oracleOk && wrapOk,
+    ready: oracleOk && wrapOk && !marketBlockedByPending,
   };
 }
