@@ -9,7 +9,7 @@ const navItems = [
   { to: '/positions', label: 'Positions' },
   { to: '/earn', label: 'Earn' },
   { to: '/analytics', label: 'Analytics' },
-  ...(import.meta.env.DEV ? [{ to: '/dev/faucet', label: 'Faucet' }] : []),
+  { to: '/dev/faucet', label: 'Faucet' },
 ];
 
 export function Navbar() {

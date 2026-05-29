@@ -1,15 +1,20 @@
 # ShadeSpot Frontend (`shadespot-frontend`)
 
-Vite + React frontend for **ShadeSpot** (FHE perpetuals).
+Vite + React trading UI for **ShadeSpot** — CoFHE-powered perpetuals where position size, collateral, direction, and PnL stay encrypted on-chain until the user (or keeper) explicitly decrypts for settlement.
 
-- Wallet connection via **RainbowKit + wagmi**
-- On-chain reads/writes via **viem**
-- Encrypted inputs + Threshold Network (TN) decrypt via **`@cofhe/sdk`**
-- UI state via **Zustand**
+Part of the [shadespot-monorepo](../): contracts live in `shadespot/`, keepers in `shadespot-backend/`.
+
+## Stack
+
+| Layer | Technology |
+|--------|------------|
+| UI | React 18, Tailwind, shadcn/ui |
+| Wallet | RainbowKit + wagmi (viem) |
+| Chains | Arbitrum Sepolia, Ethereum Sepolia, Base Sepolia |
+| FHE | `@cofhe/sdk` (encrypt inputs, Threshold Network decrypt) |
+| State | Zustand |
 
 ## Quick start
-
-From repo root:
 
 ```bash
 cd shadespot-frontend
@@ -17,79 +22,145 @@ npm install
 npm run dev
 ```
 
-Default dev server:
+- Dev server: `http://localhost:8080`
+- Production: `npm run build` → `npm run preview`
 
-- `http://localhost:8080`
-
-Production build:
-
-```bash
-npm run build
-npm run preview
-```
+Connect a wallet on one of the supported testnets. Contract addresses are chosen automatically from the wallet `chainId`.
 
 ## Configuration
 
-Contract addresses, ABIs, chain id, and the deployment start block live in:
+### On-chain addresses (source of truth)
 
-- `src/lib/contracts.ts`
+All deployments, ABIs, per-chain `fromBlock`, and index tokens:
 
-Key constants:
+- **`src/lib/contracts.ts`** — `DEPLOYMENTS` map for chain IDs `421614`, `11155111`, `84532`
 
-- `CHAIN_ID` (Arbitrum Sepolia: `421614`)
-- `CONTRACTS` (router, orderManager, positionManager, etc.)
-- `FROM_BLOCK` (used as the starting point for event queries/watchers)
+After redeploying contracts, update `DEPLOYMENTS` in **contracts**, **frontend**, and **backend** (`shadespot-backend/src/modules/config/deployments.ts`) so they stay aligned.
 
-If you redeploy contracts, update `CONTRACTS` and `FROM_BLOCK`.
+### Optional env
 
-## How the app works (high level)
+```bash
+# Dev Faucet only — when vault has no underlyingToken wired yet
+# VITE_UNDERLYING_TOKEN=0x...
+```
 
-### Market orders (open position)
+See `.env.example`. Wrap/trade collateral always uses the on-chain `vault` / `router` underlying token when set.
 
-Market opens use a two-phase CoFHE pattern:
+### Custom RPC (recommended for Base Sepolia)
 
-1. Encrypt inputs (collateral, leverage, isLong)
-2. Submit phase-1 check tx
-3. Decrypt check handle through CoFHE TN
-4. Submit finalize tx with plaintext + TN signature
+Public RPCs often cap `eth_getLogs` range (~2k blocks). For reliable position/order indexing, configure a dedicated RPC in your wallet or wagmi transport (`src/wagmi.ts`).
 
-Visual flow (same sequence as on-chain steps):
+## App routes
+
+| Route | Purpose |
+|--------|---------|
+| `/` | Landing |
+| `/trade` | Open/close positions, limit orders, chart |
+| `/positions` | Open positions (encrypted → decrypt on demand) |
+| `/history` | Closed activity (event-driven where available) |
+| `/earn` | LP deposit / withdraw (encrypted + plain paths) |
+| `/analytics` | Market / protocol stats UI |
+| `/settings` | Wallet & preferences |
+| `/dev/faucet` | Mint test FHE / plain tokens (dev) |
+
+## Features (current)
+
+### Multi-chain trading
+
+- Wallet network selects `getContracts(chainId)` — no manual `CHAIN_ID` in the frontend.
+- Supported: **Arbitrum Sepolia** (421614), **Ethereum Sepolia** (11155111), **Base Sepolia** (84532).
+
+### Market open (two-phase CoFHE)
+
+1. Encrypt collateral / leverage / direction (`@cofhe/sdk`).
+2. Phase 1: `submitOpenPositionCheck` or `submitOpenPositionCheckPlain` (wrap underlying → FHE).
+3. Off-chain: decrypt liquidity handle via CoFHE TN (`decryptForTx`).
+4. Phase 2: `finalizeOpenPosition` / `finalizeOpenPositionPlain` → `PositionOpened` on `PositionManager`.
+
+Implementation: `src/hooks/useTrade.ts`, `src/lib/tradeLiquidity.ts`
 
 ![Open position — overview](diagrams/Open%20Position.png)
 
-![Open position — continuation](diagrams/Open%20Position%202.png)
+### Collateral modes
 
-![Open position — continuation](diagrams/Open%20Position%203.png)
+| Mode | Flow |
+|------|------|
+| **Encrypted** | FHERC20 `setOperator(router)` + encrypted collateral |
+| **Wrap** | Approve plain ERC-20 → router wraps on-chain → same encrypted position storage |
 
-![Open position — continuation](diagrams/Open%20Position%204.png)
+Toggle: `CollateralModeToggle` on Trade page. Types: `src/lib/composability.ts`.
 
-Implementation lives primarily in:
+### Close position
 
-- `src/hooks/useTrade.ts`
+- **Encrypted payout**: `requestClosePosition` → backend close finalizer → `finalizeClosePosition`.
+- **Plain payout**: `requestClosePlainPayout` → keeper → `finalizeClosePlainPayout` (draws `plainUnderlyingReserve`).
+
+User waits for keeper settlement: `src/lib/closePayout.ts`. Toggle: `ClosePayoutToggle`.
+
+### Positions list (on-chain index)
+
+`FHE` opens use nonce-based keys — `getMyPositionKey` is not populated for every path. The UI discovers positions by:
+
+1. **Chunked log scan** — `PositionOpened` (PM) + `OpenPosition` (router) in 2k-block chunks (`src/lib/logScan.ts`) — required on Base Sepolia.
+2. **Incremental cache** — `localStorage` per chain + address (`src/lib/positionIndex.ts`).
+3. **Receipt capture** — position key saved immediately after a successful finalize tx.
+4. **Existence filter** — `positionExists(key)` drops closed positions.
+
+Hook: `src/hooks/usePositions.ts`
 
 ### Limit / trigger orders
 
-The UI lists pending orders by:
+- Index: `OrderCreated` events + `isOrderActive(orderId)` (`src/hooks/useOrders.ts`).
+- Execution: backend **order executor** keeper (two-phase CoFHE, same pattern as open).
+- Trade page “Recent executions”: `OrderExecuted` logs (chunked).
 
-- reading `OrderCreated` events
-- filtering by `FHEOrderManager.isOrderActive(orderId)`
-- removing orders immediately on `OrderExecuted` / `OrderCancelled` events
+### LP / Earn
 
-Implementation:
+- Encrypted: `addLiquidity` + two-phase withdraw.
+- Plain: `addLiquidityPlain`, `finalizeLiquidityWithdrawalPlain`.
+- Hook: `src/hooks/useVault.ts`
 
-- `src/hooks/useOrders.ts`
+### Decrypt position (UI)
 
-### Recent executions tab
+User-initiated TN decrypt to show size, entry, PnL, liquidation risk: `src/hooks/useDecryptPosition.ts`, `src/pages/PositionsPage.tsx`.
 
-The “Recent Executions” tab is derived from on-chain `OrderExecuted` events.
+### CoFHE client
 
-Implementation:
+Global SDK init when wallet connects: `src/hooks/useCofhe.ts`.
 
-- `src/pages/TradePage.tsx`
+## Key files
 
-## Notes / gotchas
+```
+src/lib/contracts.ts      # DEPLOYMENTS, ABIs, fromBlock
+src/lib/positionIndex.ts  # Position discovery + cache
+src/lib/logScan.ts        # Chunked eth_getLogs
+src/lib/closePayout.ts    # Wait for keeper close settlement
+src/hooks/useTrade.ts     # Open / close
+src/hooks/usePositions.ts
+src/hooks/useOrders.ts
+src/hooks/useVault.ts
+src/hooks/useMarket.ts    # Mark price (chart / display)
+src/wagmi.ts              # chains + transports
+```
 
-- **Oracle decimals**: trigger price encryption uses **8 decimals** to match the on-chain oracle.
-- **Operator approval**: the FHERC20 flow uses `setOperator(router, until)` (not ERC20 `approve`).
-- **CoFHE-heavy transactions**: some calls use higher gas limits to avoid “silent revert at gas cap”.
+## Operational notes
 
+- **Oracle decimals**: trigger prices use **8 decimals** to match `PriceOracle`.
+- **Token decimals**: FHERC20 uses **6 decimals** (`TOKEN_DECIMALS`) so amounts fit `euint64`.
+- **Operator model**: use `setOperator(router, until)` — not ERC-20 `approve` for FHE collateral.
+- **Gas**: CoFHE txs use explicit high gas limits to avoid cap reverts on L2s.
+- **Backend dependency**: closes and limit fills need `shadespot-backend` keepers running on the same chain.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|----------------|
+| Positions empty on Base Sepolia | RPC log range limits — use a good RPC; clear stale cache: `localStorage.removeItem('shadespot:positionIndex:84532:<address>')` |
+| Close stuck on “keeper” | `CLOSE_FINALIZER_ENABLED` + funded `PRIVATE_KEY` on backend for that `CHAIN_ID` |
+| CoFHE not ready | Wait for wallet + `useCofheClient`; refresh after chain switch |
+| Wrap collateral disabled | Vault `underlyingToken` unset — use `/dev/faucet` or deploy plain token |
+
+## Related repos
+
+- **Contracts & SDK scripts**: `../shadespot/README.md`
+- **Keepers & HTTP API**: `../shadespot-backend/README.md`
